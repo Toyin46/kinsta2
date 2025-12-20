@@ -1,112 +1,1034 @@
-import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
+// app/(tabs)/explore.tsx - COMPLETE FIXED VERSION
+import React, { useState, useEffect, useCallback } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TextInput,
+  FlatList,
+  TouchableOpacity,
+  Image,
+  ActivityIndicator,
+  RefreshControl,
+  Dimensions,
+  Alert,
+} from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { useAuthStore } from '@/store/authStore';
+import { supabase } from '@/config/supabase';
+import { useRouter } from 'expo-router';
 
-import { Collapsible } from '@/components/ui/collapsible';
-import { ExternalLink } from '@/components/external-link';
-import ParallaxScrollView from '@/components/parallax-scroll-view';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { IconSymbol } from '@/components/ui/icon-symbol';
-import { Fonts } from '@/constants/theme';
+const { width } = Dimensions.get('window');
+const GRID_ITEM_SIZE = (width - 32) / 3; // 3 columns with gaps
 
-export default function TabTwoScreen() {
+type TabType = 'discover' | 'trending' | 'users';
+
+interface Post {
+  id: string;
+  user_id: string;
+  username: string;
+  display_name: string;
+  user_photo_url?: string;
+  media_url?: string;
+  media_type?: string;
+  caption: string;
+  likes_count: number;
+  comments_count: number;
+  coins_received: number;
+  created_at: string;
+}
+
+interface UserProfile {
+  id: string;
+  username: string;
+  display_name: string;
+  avatar_url?: string;
+  followers: number;
+  following: number;
+  bio?: string;
+  posts_count: number;
+  isFollowing?: boolean;
+}
+
+export default function ExploreScreen() {
+  const { user, userProfile } = useAuthStore();
+  const userId = user?.id || (user as any)?.id;
+  const router = useRouter();
+
+  const [searchQuery, setSearchQuery] = useState('');
+  const [activeTab, setActiveTab] = useState<TabType>('discover');
+  const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [allPosts, setAllPosts] = useState<Post[]>([]);
+  const [searchResults, setSearchResults] = useState<Post[]>([]);
+  const [trendingPosts, setTrendingPosts] = useState<Post[]>([]);
+  const [suggestedUsers, setSuggestedUsers] = useState<UserProfile[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [followingUsers, setFollowingUsers] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    loadInitialData();
+    if (userId) {
+      loadFollowingStatus();
+    }
+  }, [userId]);
+
+  useEffect(() => {
+    if (searchQuery.length > 0) {
+      const delaySearch = setTimeout(() => {
+        performSearch();
+      }, 500);
+      return () => clearTimeout(delaySearch);
+    } else {
+      setSearchResults([]);
+      setSearching(false);
+    }
+  }, [searchQuery]);
+
+  const loadFollowingStatus = async () => {
+    if (!userId) return;
+   
+    try {
+      const { data, error } = await supabase
+        .from('follows')
+        .select('following_id')
+        .eq('follower_id', userId);
+
+      if (error) throw error;
+
+      const followingSet = new Set(data.map(f => f.following_id));
+      setFollowingUsers(followingSet);
+    } catch (error) {
+      console.error('Error loading following status:', error);
+    }
+  };
+
+  const loadInitialData = async () => {
+    setLoading(true);
+    try {
+      await Promise.all([
+        loadAllPosts(),
+        loadTrendingPosts(),
+        loadSuggestedUsers(),
+      ]);
+    } catch (error) {
+      console.error('Error loading explore data:', error);
+      Alert.alert('Error', 'Failed to load explore content');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadAllPosts = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('posts')
+        .select(`
+          id,
+          user_id,
+          caption,
+          media_url,
+          media_type,
+          likes_count,
+          comments_count,
+          coins_received,
+          created_at,
+          is_published,
+          users!posts_user_id_fkey (
+            username,
+            display_name,
+            avatar_url
+          )
+        `)
+        .eq('is_published', true)
+        .not('media_url', 'is', null)
+        .order('created_at', { ascending: false })
+        .limit(100);
+
+      if (error) throw error;
+
+      const formattedPosts = (data || []).map((post: any) => ({
+        id: post.id,
+        user_id: post.user_id,
+        username: post.users?.username || 'unknown',
+        display_name: post.users?.display_name || 'Unknown User',
+        user_photo_url: post.users?.avatar_url,
+        media_url: post.media_url,
+        media_type: post.media_type || 'image',
+        caption: post.caption || '',
+        likes_count: post.likes_count || 0,
+        comments_count: post.comments_count || 0,
+        coins_received: post.coins_received || 0,
+        created_at: post.created_at,
+      }));
+
+      setAllPosts(formattedPosts);
+    } catch (error) {
+      console.error('Error loading posts:', error);
+    }
+  };
+
+  const loadTrendingPosts = async () => {
+    try {
+      // Get posts from the last 7 days sorted by engagement
+      const sevenDaysAgo = new Date();
+      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+      const { data, error } = await supabase
+        .from('posts')
+        .select(`
+          id,
+          user_id,
+          caption,
+          media_url,
+          media_type,
+          likes_count,
+          comments_count,
+          coins_received,
+          created_at,
+          is_published,
+          users!posts_user_id_fkey (
+            username,
+            display_name,
+            avatar_url
+          )
+        `)
+        .eq('is_published', true)
+        .not('media_url', 'is', null)
+        .gte('created_at', sevenDaysAgo.toISOString())
+        .order('likes_count', { ascending: false })
+        .order('comments_count', { ascending: false })
+        .limit(50);
+
+      if (error) throw error;
+
+      const formattedPosts = (data || []).map((post: any) => ({
+        id: post.id,
+        user_id: post.user_id,
+        username: post.users?.username || 'unknown',
+        display_name: post.users?.display_name || 'Unknown User',
+        user_photo_url: post.users?.avatar_url,
+        media_url: post.media_url,
+        media_type: post.media_type || 'image',
+        caption: post.caption || '',
+        likes_count: post.likes_count || 0,
+        comments_count: post.comments_count || 0,
+        coins_received: post.coins_received || 0,
+        created_at: post.created_at,
+      }));
+
+      setTrendingPosts(formattedPosts);
+    } catch (error) {
+      console.error('Error loading trending:', error);
+    }
+  };
+
+  const loadSuggestedUsers = async () => {
+    try {
+      const { data: usersData, error } = await supabase
+        .from('users')
+        .select('id, username, display_name, avatar_url, followers, bio')
+        .neq('id', userId || '')
+        .order('followers', { ascending: false })
+        .limit(50);
+
+      if (error) throw error;
+
+      const usersWithCounts = await Promise.all(
+        (usersData || []).map(async (userData: any) => {
+          const { count: followingCount } = await supabase
+            .from('follows')
+            .select('*', { count: 'exact', head: true })
+            .eq('follower_id', userData.id);
+
+          const { count: postsCount } = await supabase
+            .from('posts')
+            .select('*', { count: 'exact', head: true })
+            .eq('user_id', userData.id)
+            .eq('is_published', true);
+
+          return {
+            id: userData.id,
+            username: userData.username,
+            display_name: userData.display_name,
+            avatar_url: userData.avatar_url,
+            followers: userData.followers || 0,
+            following: followingCount || 0,
+            bio: userData.bio,
+            posts_count: postsCount || 0,
+            isFollowing: followingUsers.has(userData.id),
+          };
+        })
+      );
+
+      // Filter out users with no posts and sort by engagement
+      const activeUsers = usersWithCounts
+        .filter(u => u.posts_count > 0)
+        .sort((a, b) => (b.followers + b.posts_count) - (a.followers + a.posts_count));
+
+      setSuggestedUsers(activeUsers);
+    } catch (error) {
+      console.error('Error loading users:', error);
+    }
+  };
+
+  const performSearch = async () => {
+    if (!searchQuery.trim()) return;
+
+    setSearching(true);
+    try {
+      const searchTerm = searchQuery.toLowerCase().trim();
+
+      // Search posts
+      const { data: postsData, error: postsError } = await supabase
+        .from('posts')
+        .select(`
+          id,
+          user_id,
+          caption,
+          media_url,
+          media_type,
+          likes_count,
+          comments_count,
+          coins_received,
+          created_at,
+          is_published,
+          users!posts_user_id_fkey (
+            username,
+            display_name,
+            avatar_url
+          )
+        `)
+        .eq('is_published', true)
+        .not('media_url', 'is', null)
+        .ilike('caption', `%${searchTerm}%`)
+        .order('created_at', { ascending: false })
+        .limit(100);
+
+      if (postsError) throw postsError;
+
+      // Search users
+      const { data: usersData, error: usersError } = await supabase
+        .from('users')
+        .select('username, display_name')
+        .or(`username.ilike.%${searchTerm}%,display_name.ilike.%${searchTerm}%`)
+        .limit(50);
+
+      if (usersError) throw usersError;
+
+      const userIds = (usersData || []).map(u => u.username);
+
+      // Combine results
+      const allResults = (postsData || [])
+        .map((post: any) => ({
+          id: post.id,
+          user_id: post.user_id,
+          username: post.users?.username || 'unknown',
+          display_name: post.users?.display_name || 'Unknown User',
+          user_photo_url: post.users?.avatar_url,
+          media_url: post.media_url,
+          media_type: post.media_type || 'image',
+          caption: post.caption || '',
+          likes_count: post.likes_count || 0,
+          comments_count: post.comments_count || 0,
+          coins_received: post.coins_received || 0,
+          created_at: post.created_at,
+        }))
+        .filter((post: Post) => {
+          const captionMatch = post.caption?.toLowerCase().includes(searchTerm);
+          const usernameMatch = userIds.includes(post.username);
+          const displayNameMatch = post.display_name?.toLowerCase().includes(searchTerm);
+          return captionMatch || usernameMatch || displayNameMatch;
+        });
+
+      setSearchResults(allResults);
+    } catch (error) {
+      console.error('Search error:', error);
+      Alert.alert('Search Error', 'Failed to search. Please try again.');
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await loadInitialData();
+    if (userId) {
+      await loadFollowingStatus();
+    }
+    setRefreshing(false);
+  };
+
+  const handlePostPress = (post: Post) => {
+    // Navigate to post detail or home feed
+    router.push('/(tabs)/' as any);
+  };
+
+  const handleUserPress = (targetUserId: string) => {
+    router.push(`/user/${targetUserId}` as any);
+  };
+
+  const handleFollowUser = async (targetUser: UserProfile) => {
+    if (!userId) {
+      Alert.alert('Login Required', 'Please login to follow users');
+      return;
+    }
+
+    if (targetUser.id === userId) {
+      Alert.alert('Error', 'You cannot follow yourself');
+      return;
+    }
+
+    try {
+      const isCurrentlyFollowing = followingUsers.has(targetUser.id);
+
+      if (isCurrentlyFollowing) {
+        // Unfollow
+        const { error: deleteError } = await supabase
+          .from('follows')
+          .delete()
+          .eq('follower_id', userId)
+          .eq('following_id', targetUser.id);
+
+        if (deleteError) throw deleteError;
+
+        // Update follower count
+        const { data: userData } = await supabase
+          .from('users')
+          .select('followers')
+          .eq('id', targetUser.id)
+          .single();
+
+        await supabase
+          .from('users')
+          .update({ followers: Math.max(0, (userData?.followers || 0) - 1) })
+          .eq('id', targetUser.id);
+
+        // Update local state
+        const newFollowingSet = new Set(followingUsers);
+        newFollowingSet.delete(targetUser.id);
+        setFollowingUsers(newFollowingSet);
+
+        setSuggestedUsers(prev =>
+          prev.map(u =>
+            u.id === targetUser.id
+              ? { ...u, followers: Math.max(0, u.followers - 1), isFollowing: false }
+              : u
+          )
+        );
+      } else {
+        // Follow
+        const { error: insertError } = await supabase
+          .from('follows')
+          .insert({
+            follower_id: userId,
+            following_id: targetUser.id,
+          });
+
+        if (insertError) {
+          if (insertError.code === '23505') {
+            Alert.alert('Info', 'You are already following this user');
+            return;
+          }
+          throw insertError;
+        }
+
+        // Update follower count
+        const { data: userData } = await supabase
+          .from('users')
+          .select('followers')
+          .eq('id', targetUser.id)
+          .single();
+
+        await supabase
+          .from('users')
+          .update({ followers: (userData?.followers || 0) + 1 })
+          .eq('id', targetUser.id);
+
+        // Update local state
+        const newFollowingSet = new Set(followingUsers);
+        newFollowingSet.add(targetUser.id);
+        setFollowingUsers(newFollowingSet);
+
+        setSuggestedUsers(prev =>
+          prev.map(u =>
+            u.id === targetUser.id
+              ? { ...u, followers: u.followers + 1, isFollowing: true }
+              : u
+          )
+        );
+      }
+    } catch (error: any) {
+      console.error('Follow error:', error);
+      Alert.alert('Error', error.message || 'Failed to update follow status');
+    }
+  };
+
+  const renderGridPost = ({ item }: { item: Post }) => (
+    <TouchableOpacity
+      style={styles.gridItem}
+      onPress={() => handlePostPress(item)}
+      activeOpacity={0.8}
+    >
+      <Image
+        source={{ uri: item.media_url }}
+        style={styles.gridImage}
+        resizeMode="cover"
+      />
+      {item.media_type === 'video' && (
+        <View style={styles.videoIndicator}>
+          <Ionicons name="play" size={20} color="#00ff88" />
+        </View>
+      )}
+      <View style={styles.gridOverlay}>
+        <View style={styles.gridStats}>
+          <Ionicons name="heart" size={14} color="#00ff88" />
+          <Text style={styles.gridStatText}>{item.likes_count}</Text>
+        </View>
+        {item.coins_received > 0 && (
+          <View style={styles.gridStats}>
+            <MaterialCommunityIcons name="diamond" size={14} color="#ffd700" />
+            <Text style={styles.gridCoinText}>{item.coins_received}</Text>
+          </View>
+        )}
+      </View>
+    </TouchableOpacity>
+  );
+
+  const renderUserCard = ({ item }: { item: UserProfile }) => {
+    const isFollowing = followingUsers.has(item.id);
+   
+    return (
+      <TouchableOpacity
+        style={styles.userCard}
+        onPress={() => handleUserPress(item.id)}
+        activeOpacity={0.8}
+      >
+        {item.avatar_url ? (
+          <Image source={{ uri: item.avatar_url }} style={styles.userAvatar} />
+        ) : (
+          <View style={[styles.userAvatar, styles.avatarPlaceholder]}>
+            <Ionicons name="person" size={24} color="#00ff88" />
+          </View>
+        )}
+        <View style={styles.userInfo}>
+          <Text style={styles.userDisplayName} numberOfLines={1}>
+            {item.display_name}
+          </Text>
+          <Text style={styles.userUsername} numberOfLines={1}>
+            @{item.username}
+          </Text>
+          {item.bio && (
+            <Text style={styles.userBio} numberOfLines={1}>
+              {item.bio}
+            </Text>
+          )}
+          <View style={styles.userStatsRow}>
+            <Text style={styles.userStats}>{item.posts_count} posts</Text>
+            <Text style={styles.userStatsDot}>•</Text>
+            <Text style={styles.userStats}>{item.followers} followers</Text>
+          </View>
+        </View>
+        <TouchableOpacity
+          style={[styles.followButton, isFollowing && styles.followingButton]}
+          onPress={() => handleFollowUser(item)}
+        >
+          <Text style={[styles.followButtonText, isFollowing && styles.followingButtonText]}>
+            {isFollowing ? 'Following' : 'Follow'}
+          </Text>
+        </TouchableOpacity>
+      </TouchableOpacity>
+    );
+  };
+
+  const renderEmptyState = () => {
+    let icon = 'search-outline';
+    let title = 'No results found';
+    let subtitle = 'Try searching for something else';
+
+    if (activeTab === 'discover' && allPosts.length === 0) {
+      icon = 'compass-outline';
+      title = 'No posts yet';
+      subtitle = 'Check back later for new content';
+    } else if (activeTab === 'trending' && trendingPosts.length === 0) {
+      icon = 'trending-up-outline';
+      title = 'No trending posts';
+      subtitle = 'Posts will appear here as they gain popularity';
+    } else if (activeTab === 'users' && suggestedUsers.length === 0) {
+      icon = 'people-outline';
+      title = 'No users found';
+      subtitle = 'We couldn\'t find any users to suggest';
+    }
+
+    return (
+      <View style={styles.emptyContainer}>
+        <Ionicons name={icon as any} size={80} color="#333" />
+        <Text style={styles.emptyTitle}>{title}</Text>
+        <Text style={styles.emptySubtitle}>{subtitle}</Text>
+      </View>
+    );
+  };
+
+  const renderContent = () => {
+    // Search results
+    if (searchQuery.length > 0) {
+      if (searching) {
+        return (
+          <View style={styles.centerContainer}>
+            <ActivityIndicator size="large" color="#00ff88" />
+            <Text style={styles.loadingText}>Searching...</Text>
+          </View>
+        );
+      }
+
+      if (searchResults.length === 0) {
+        return renderEmptyState();
+      }
+
+      return (
+        <FlatList
+          data={searchResults}
+          renderItem={renderGridPost}
+          keyExtractor={item => item.id}
+          numColumns={3}
+          columnWrapperStyle={styles.gridRow}
+          contentContainerStyle={styles.gridContainer}
+          showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              tintColor="#00ff88"
+            />
+          }
+        />
+      );
+    }
+
+    // Tab content
+    switch (activeTab) {
+      case 'discover':
+        if (allPosts.length === 0) return renderEmptyState();
+        return (
+          <FlatList
+            data={allPosts}
+            renderItem={renderGridPost}
+            keyExtractor={item => item.id}
+            numColumns={3}
+            columnWrapperStyle={styles.gridRow}
+            contentContainerStyle={styles.gridContainer}
+            showsVerticalScrollIndicator={false}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                tintColor="#00ff88"
+              />
+            }
+          />
+        );
+
+      case 'trending':
+        if (trendingPosts.length === 0) return renderEmptyState();
+        return (
+          <FlatList
+            data={trendingPosts}
+            renderItem={renderGridPost}
+            keyExtractor={item => item.id}
+            numColumns={3}
+            columnWrapperStyle={styles.gridRow}
+            contentContainerStyle={styles.gridContainer}
+            showsVerticalScrollIndicator={false}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                tintColor="#00ff88"
+              />
+            }
+          />
+        );
+
+      case 'users':
+        if (suggestedUsers.length === 0) return renderEmptyState();
+        return (
+          <FlatList
+            data={suggestedUsers}
+            renderItem={renderUserCard}
+            keyExtractor={item => item.id}
+            contentContainerStyle={styles.userListContainer}
+            showsVerticalScrollIndicator={false}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                tintColor="#00ff88"
+              />
+            }
+          />
+        );
+
+      default:
+        return null;
+    }
+  };
+
+  if (loading) {
+    return (
+      <View style={styles.container}>
+        <LinearGradient colors={['#000000', '#0a0a0a']} style={styles.header}>
+          <Text style={styles.headerTitle}>Explore</Text>
+          <View style={styles.coinsHeader}>
+            <MaterialCommunityIcons name="diamond" size={18} color="#ffd700" />
+            <Text style={styles.coinsHeaderText}>{userProfile?.coins || 0}</Text>
+          </View>
+        </LinearGradient>
+        <View style={styles.centerContainer}>
+          <ActivityIndicator size="large" color="#00ff88" />
+          <Text style={styles.loadingText}>Loading explore...</Text>
+        </View>
+      </View>
+    );
+  }
+
   return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#D0D0D0', dark: '#353636' }}
-      headerImage={
-        <IconSymbol
-          size={310}
-          color="#808080"
-          name="chevron.left.forwardslash.chevron.right"
-          style={styles.headerImage}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText
-          type="title"
-          style={{
-            fontFamily: Fonts.rounded,
-          }}>
-          Explore
-        </ThemedText>
-      </ThemedView>
-      <ThemedText>This app includes example code to help you get started.</ThemedText>
-      <Collapsible title="File-based routing">
-        <ThemedText>
-          This app has two screens:{' '}
-          <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> and{' '}
-          <ThemedText type="defaultSemiBold">app/(tabs)/explore.tsx</ThemedText>
-        </ThemedText>
-        <ThemedText>
-          The layout file in <ThemedText type="defaultSemiBold">app/(tabs)/_layout.tsx</ThemedText>{' '}
-          sets up the tab navigator.
-        </ThemedText>
-        <ExternalLink href="https://docs.expo.dev/router/introduction">
-          <ThemedText type="link">Learn more</ThemedText>
-        </ExternalLink>
-      </Collapsible>
-      <Collapsible title="Android, iOS, and web support">
-        <ThemedText>
-          You can open this project on Android, iOS, and the web. To open the web version, press{' '}
-          <ThemedText type="defaultSemiBold">w</ThemedText> in the terminal running this project.
-        </ThemedText>
-      </Collapsible>
-      <Collapsible title="Images">
-        <ThemedText>
-          For static images, you can use the <ThemedText type="defaultSemiBold">@2x</ThemedText> and{' '}
-          <ThemedText type="defaultSemiBold">@3x</ThemedText> suffixes to provide files for
-          different screen densities
-        </ThemedText>
-        <Image
-          source={require('@/assets/images/react-logo.png')}
-          style={{ width: 100, height: 100, alignSelf: 'center' }}
-        />
-        <ExternalLink href="https://reactnative.dev/docs/images">
-          <ThemedText type="link">Learn more</ThemedText>
-        </ExternalLink>
-      </Collapsible>
-      <Collapsible title="Light and dark mode components">
-        <ThemedText>
-          This template has light and dark mode support. The{' '}
-          <ThemedText type="defaultSemiBold">useColorScheme()</ThemedText> hook lets you inspect
-          what the user&apos;s current color scheme is, and so you can adjust UI colors accordingly.
-        </ThemedText>
-        <ExternalLink href="https://docs.expo.dev/develop/user-interface/color-themes/">
-          <ThemedText type="link">Learn more</ThemedText>
-        </ExternalLink>
-      </Collapsible>
-      <Collapsible title="Animations">
-        <ThemedText>
-          This template includes an example of an animated component. The{' '}
-          <ThemedText type="defaultSemiBold">components/HelloWave.tsx</ThemedText> component uses
-          the powerful{' '}
-          <ThemedText type="defaultSemiBold" style={{ fontFamily: Fonts.mono }}>
-            react-native-reanimated
-          </ThemedText>{' '}
-          library to create a waving hand animation.
-        </ThemedText>
-        {Platform.select({
-          ios: (
-            <ThemedText>
-              The <ThemedText type="defaultSemiBold">components/ParallaxScrollView.tsx</ThemedText>{' '}
-              component provides a parallax effect for the header image.
-            </ThemedText>
-          ),
-        })}
-      </Collapsible>
-    </ParallaxScrollView>
+    <View style={styles.container}>
+      <LinearGradient colors={['#000000', '#0a0a0a']} style={styles.header}>
+        <Text style={styles.headerTitle}>Explore</Text>
+        <View style={styles.coinsHeader}>
+          <MaterialCommunityIcons name="diamond" size={18} color="#ffd700" />
+          <Text style={styles.coinsHeaderText}>{userProfile?.coins || 0}</Text>
+        </View>
+      </LinearGradient>
+
+      {/* Search Bar */}
+      <View style={styles.searchContainer}>
+        <View style={styles.searchBar}>
+          <Ionicons name="search" size={20} color="#00ff88" />
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search posts, users, tags..."
+            placeholderTextColor="#666"
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          {searchQuery.length > 0 && (
+            <TouchableOpacity onPress={() => setSearchQuery('')}>
+              <Ionicons name="close-circle" size={20} color="#00ff88" />
+            </TouchableOpacity>
+          )}
+        </View>
+      </View>
+
+      {/* Tabs */}
+      {searchQuery.length === 0 && (
+        <View style={styles.tabsContainer}>
+          <TouchableOpacity
+            style={[styles.tab, activeTab === 'discover' && styles.tabActive]}
+            onPress={() => setActiveTab('discover')}
+          >
+            <Ionicons
+              name="compass"
+              size={20}
+              color={activeTab === 'discover' ? '#00ff88' : '#666'}
+            />
+            <Text style={[styles.tabText, activeTab === 'discover' && styles.tabTextActive]}>
+              Discover
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.tab, activeTab === 'trending' && styles.tabActive]}
+            onPress={() => setActiveTab('trending')}
+          >
+            <Ionicons
+              name="trending-up"
+              size={20}
+              color={activeTab === 'trending' ? '#00ff88' : '#666'}
+            />
+            <Text style={[styles.tabText, activeTab === 'trending' && styles.tabTextActive]}>
+              Trending
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.tab, activeTab === 'users' && styles.tabActive]}
+            onPress={() => setActiveTab('users')}
+          >
+            <Ionicons
+              name="people"
+              size={20}
+              color={activeTab === 'users' ? '#00ff88' : '#666'}
+            />
+            <Text style={[styles.tabText, activeTab === 'users' && styles.tabTextActive]}>
+              Users
+            </Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Content */}
+      {renderContent()}
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  headerImage: {
-    color: '#808080',
-    bottom: -90,
-    left: -35,
-    position: 'absolute',
+  container: {
+    flex: 1,
+    backgroundColor: '#000',
   },
-  titleContainer: {
+  header: {
+    paddingTop: 50,
+    paddingBottom: 16,
+    paddingHorizontal: 24,
     flexDirection: 'row',
-    gap: 8,
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    borderBottomWidth: 1,
+    borderBottomColor: '#1a1a1a',
   },
-});
+  headerTitle: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    color: '#00ff88',
+  },
+  coinsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1a1a1a',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    gap: 6,
+    borderWidth: 1,
+    borderColor: '#00ff88',
+  },
+  coinsHeaderText: {
+    color: '#00ff88',
+    fontWeight: 'bold',
+    fontSize: 14,
+  },
+  searchContainer: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: '#000',
+  },
+  searchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1a1a1a',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    gap: 12,
+    borderWidth: 1,
+    borderColor: '#333',
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 15,
+    color: '#fff',
+  },
+  tabsContainer: {
+    flexDirection: 'row',
+    backgroundColor: '#000',
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+    gap: 12,
+  },
+  tab: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    borderRadius: 12,
+    gap: 6,
+    backgroundColor: '#1a1a1a',
+    borderWidth: 1,
+    borderColor: '#333',
+  },
+  tabActive: {
+    backgroundColor: 'rgba(0, 255, 136, 0.1)',
+    borderColor: '#00ff88',
+  },
+  tabText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#666',
+  },
+  tabTextActive: {
+    color: '#00ff88',
+  },
+  centerContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#000',
+  },
+  loadingText: {
+    marginTop: 12,
+    fontSize: 16,
+    color: '#666',
+  },
+  emptyContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 40,
+    backgroundColor: '#000',
+  },
+  emptyTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#fff',
+    marginTop: 16,
+  },
+  emptySubtitle: {
+    fontSize: 14,
+    color: '#666',
+    marginTop: 8,
+    textAlign: 'center',
+  },
+  gridContainer: {
+    padding: 12,
+    backgroundColor: '#000',
+  },
+  gridRow: {
+    gap: 4,
+    marginBottom: 4,
+  },
+  gridItem: {
+    width: GRID_ITEM_SIZE,
+    height: GRID_ITEM_SIZE,
+    borderRadius: 8,
+    overflow: 'hidden',
+    backgroundColor: '#1a1a1a',
+    position: 'relative',
+    borderWidth: 0.5,
+    borderColor: '#333',
+  },
+  gridImage: {
+    width: '100%',
+    height: '100%',
+  },
+  videoIndicator: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    borderRadius: 12,
+    padding: 4,
+  },
+  gridOverlay: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    padding: 6,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  gridStats: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  gridStatText: {
+    color: '#00ff88',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  gridCoinText: {
+    color: '#ffd700',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  userListContainer: {
+    padding: 16,
+    backgroundColor: '#000',
+  },
+  userCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0a0a0a',
+    padding: 16,
+    borderRadius: 16,
+    marginBottom: 12,
+    gap: 12,
+    borderWidth: 1,
+    borderColor: '#1a1a1a',
+  },
+  userAvatar: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#1a1a1a',
+    borderWidth: 2,
+    borderColor: '#00ff88',
+  },
+  avatarPlaceholder: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  userInfo: {
+    flex: 1,
+  },
+  userDisplayName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#fff',
+    marginBottom: 2,
+  },
+  userUsername: {
+    fontSize: 14,
+    color: '#00ff88',
+    marginBottom: 4,
+  },
+  userBio: {
+    fontSize: 13,
+    color: '#999',
+    marginBottom: 6,
+  },
+  userStatsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  userStats: {
+    fontSize: 12,
+    color: '#666',
+  },
+  userStatsDot: {
+    fontSize: 12,
+    color: '#666',
+  },
+  followButton: {
+    backgroundColor: '#00ff88',
+    paddingHorizontal: 20,
+    paddingVertical: 8,
+    borderRadius: 20,
+    minWidth: 90,
+    alignItems: 'center',
+  },
+  followingButton: {
+    backgroundColor: '#1a1a1a',
+    borderWidth: 1,
+    borderColor: '#00ff88',
+  },
+  followButtonText: {
+    color: '#000',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  followingButtonText: {
+    color: '#00ff88',
+  },
+}); 
+	
