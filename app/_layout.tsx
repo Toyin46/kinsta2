@@ -1,24 +1,37 @@
-import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
+// app/_layout.tsx
+import { useEffect } from 'react';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import 'react-native-reanimated';
-
-import { useColorScheme } from '@/hooks/use-color-scheme';
-
-export const unstable_settings = {
-  anchor: '(tabs)',
-};
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { StripeProvider } from '@stripe/stripe-react-native';
+import { useAuthStore } from '@/store/authStore';
 
 export default function RootLayout() {
-  const colorScheme = useColorScheme();
+  const { initAuth } = useAuthStore();
+
+  useEffect(() => {
+    initAuth();
+  }, []);
 
   return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <Stack>
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
-      </Stack>
-      <StatusBar style="auto" />
-    </ThemeProvider>
+    <StripeProvider
+      publishableKey="pk_test_51ScyRkPu5ChQEBuHQs1pFcrxrpsU1hpThc5nS7SDS7ra50MwCS9IR12asT2bxWZ737mp2pkxNSidbyzqcwZ4xCDp00LIpaMvWk"
+      merchantIdentifier="merchant.com.kinsta"
+    >
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        <StatusBar style="light" />
+        <Stack screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="index" />
+          <Stack.Screen name="(auth)" />
+          <Stack.Screen name="(tabs)" />
+          <Stack.Screen name="buy-coins" />
+          <Stack.Screen name="premium-subscription" options={{ headerShown: false }} />
+          <Stack.Screen name="schedule-post" options={{ headerShown: false }} />
+          <Stack.Screen name="user/[id]" options={{ headerShown: false }} />
+      {/* ... other routes ... */}
+        </Stack>
+      </GestureHandlerRootView>
+    </StripeProvider>
   );
 }
+	
