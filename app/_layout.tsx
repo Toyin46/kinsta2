@@ -1,4 +1,4 @@
-// app/_layout.tsx - FIXED VERSION
+// app/_layout.tsx - ABSOLUTE FINAL FIX
 import { useEffect, useRef } from 'react';
 import { Stack, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
@@ -12,22 +12,13 @@ import {
   setBadgeCount,
 } from '@/utils/pushNotifications';
 
-// Configure how notifications are handled when app is foregrounded
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-  }),
-});
-
 export default function RootLayout() {
   const { initAuth, user } = useAuthStore();
   const router = useRouter();
 
-  // Fix: Provide initial value (undefined) and correct type
-  const notificationListener = useRef<Notifications.Subscription | undefined>(undefined);
-  const responseListener = useRef<Notifications.Subscription | undefined>(undefined);
+  // Refs with null initial value - THIS IS THE CORRECT WAY
+  const notificationListener = useRef<Notifications.Subscription | null>(null);
+  const responseListener = useRef<Notifications.Subscription | null>(null);
 
   // Initialize auth
   useEffect(() => {
@@ -38,13 +29,17 @@ export default function RootLayout() {
   useEffect(() => {
     if (user) {
       setupNotifications();
-
-      return () => {
-        // Fix: Call remove() method on the subscription object
-        notificationListener.current?.remove();
-        responseListener.current?.remove();
-      };
     }
+
+    // Cleanup function
+    return () => {
+      if (notificationListener.current) {
+        notificationListener.current.remove();
+      }
+      if (responseListener.current) {
+        responseListener.current.remove();
+      }
+    };
   }, [user]);
 
   const setupNotifications = async () => {
@@ -56,22 +51,17 @@ export default function RootLayout() {
 
       // Listen for notifications received while app is foregrounded
       notificationListener.current = Notifications.addNotificationReceivedListener(
-        (notification: Notifications.Notification) => {
+        (notification) => {
           console.log('📬 Notification received:', notification);
-        
-          // Update badge count
           updateBadgeCount();
         }
       );
 
       // Listen for user tapping on notifications
       responseListener.current = Notifications.addNotificationResponseReceivedListener(
-        (response: Notifications.NotificationResponse) => {
+        (response) => {
           console.log('👆 Notification tapped:', response);
-        
           const data = response.notification.request.content.data;
-        
-          // Navigate based on notification type
           handleNotificationNavigation(data);
         }
       );
@@ -97,7 +87,7 @@ export default function RootLayout() {
       // Initial badge count update
       updateBadgeCount();
 
-      // Cleanup function
+      // Cleanup Supabase channel
       return () => {
         supabase.removeChannel(channel);
       };
@@ -113,7 +103,6 @@ export default function RootLayout() {
       // Navigate based on notification type
       switch (data.type) {
         case 'follow':
-          // Navigate to user profile
           router.push(`/user/${data.fromUserId}` as any);
           break;
       
@@ -121,17 +110,12 @@ export default function RootLayout() {
         case 'comment':
         case 'coin':
         case 'mention':
-          // Navigate to post
           if (data.postId) {
-            // If you have a specific post detail screen, use it
-            // router.push(`/post/${data.postId}` as any);
-            // Otherwise, go to home feed
             router.push('/(tabs)' as any);
           }
           break;
       
         default:
-          // Default to notifications tab
           router.push('/(tabs)/notifications' as any);
       }
     } catch (error) {
@@ -172,9 +156,9 @@ export default function RootLayout() {
           <Stack.Screen name="(auth)" />
           <Stack.Screen name="(tabs)" />
           <Stack.Screen name="buy-coins" />
-          <Stack.Screen name="premium-subscription" options={{ headerShown: false }} />
-          <Stack.Screen name="schedule-post" options={{ headerShown: false }} />
-          <Stack.Screen name="user/[id]" options={{ headerShown: false }} />
+          <Stack.Screen name="premium-subscription" />
+          <Stack.Screen name="schedule-post" />
+          <Stack.Screen name="user/[id]" />
         </Stack>
       </GestureHandlerRootView>
     </StripeProvider>

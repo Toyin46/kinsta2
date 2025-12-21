@@ -19,6 +19,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.kinsta.kinsta2",
+      "buildNumber": "1",
       "infoPlist": {
         "NSCameraUsageDescription": "Allow Kinsta to access your camera to take photos and videos.",
         "NSMicrophoneUsageDescription": "Allow Kinsta to record audio for videos.",
@@ -41,6 +42,7 @@
     },
     "android": {
       "package": "com.kinsta.kinsta2",
+      "versionCode": 1,
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -166,9 +168,19 @@
       "reactCompiler": true
     },
     "extra": {
+      "router": {
+        "origin": false
+      },
       "eas": {
-        "projectId": "https://expo.dev/accounts/toyin/projects/kinsta2/builds/4c1209a3-d231-4166-867c-17ac91953907"
+        "projectId": "cc54ae3d-1746-409a-8041-cead41240d56"
       }
+    },
+    "owner": "toyin",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/cc54ae3d-1746-409a-8041-cead41240d56"
     }
   }
 } 
