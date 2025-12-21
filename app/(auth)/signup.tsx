@@ -1,6 +1,4 @@
-// app/auth/signup.tsx
-// Signup screen with email/phone support and referral code
-
+// app/auth/signup.tsx - EMAIL ONLY VERSION
 import React, { useState, useEffect } from 'react';
 import {
   View,
@@ -19,15 +17,11 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { supabase } from '@/config/supabase';
 import { processReferral } from '@/utils/coinUtils';
 
-type SignupMethod = 'email' | 'phone';
-
 export default function SignupScreen() {
   const router = useRouter();
   const params = useLocalSearchParams();
 
-  const [signupMethod, setSignupMethod] = useState<SignupMethod>('email');
   const [email, setEmail] = useState('');
-  const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [username, setUsername] = useState('');
@@ -38,68 +32,26 @@ export default function SignupScreen() {
   const [showReferral, setShowReferral] = useState(false);
 
   useEffect(() => {
-    // Check if referral code was passed via URL
     if (params.ref) {
       setReferralCode(params.ref as string);
       setShowReferral(true);
     }
   }, [params.ref]);
 
-  const formatPhoneNumber = (text: string) => {
-    // Remove all non-numeric characters
-    const cleaned = text.replace(/\D/g, '');
-   
-    // Limit to 11 digits (assuming format like 1234567890)
-    const limited = cleaned.slice(0, 11);
-   
-    // Format as +1 (234) 567-8900 or similar
-    if (limited.length <= 3) {
-      return limited;
-    } else if (limited.length <= 6) {
-      return `(${limited.slice(0, 3)}) ${limited.slice(3)}`;
-    } else if (limited.length <= 10) {
-      return `(${limited.slice(0, 3)}) ${limited.slice(3, 6)}-${limited.slice(6)}`;
-    } else {
-      return `+${limited.slice(0, 1)} (${limited.slice(1, 4)}) ${limited.slice(4, 7)}-${limited.slice(7)}`;
-    }
-  };
-
   const validateEmail = (email: string) => {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     return emailRegex.test(email);
   };
 
-  const validatePhone = (phone: string) => {
-    // Remove all non-numeric characters
-    const cleaned = phone.replace(/\D/g, '');
-    // Must be at least 10 digits
-    return cleaned.length >= 10;
-  };
-
   const validateInputs = () => {
-    if (!username || !displayName || !password) {
+    if (!username || !displayName || !password || !email) {
       Alert.alert('Error', 'Please fill in all required fields');
       return false;
     }
 
-    if (signupMethod === 'email') {
-      if (!email) {
-        Alert.alert('Error', 'Please enter your email');
-        return false;
-      }
-      if (!validateEmail(email)) {
-        Alert.alert('Error', 'Please enter a valid email address');
-        return false;
-      }
-    } else {
-      if (!phone) {
-        Alert.alert('Error', 'Please enter your phone number');
-        return false;
-      }
-      if (!validatePhone(phone)) {
-        Alert.alert('Error', 'Please enter a valid phone number (at least 10 digits)');
-        return false;
-      }
+    if (!validateEmail(email)) {
+      Alert.alert('Error', 'Please enter a valid email address');
+      return false;
     }
 
     if (password.length < 6) {
@@ -117,7 +69,6 @@ export default function SignupScreen() {
       return false;
     }
 
-    // Username validation
     if (!/^[a-zA-Z0-9_]+$/.test(username)) {
       Alert.alert('Error', 'Username can only contain letters, numbers, and underscores');
       return false;
@@ -145,31 +96,11 @@ export default function SignupScreen() {
         return;
       }
 
-      let authData;
-      let authError;
-
-      // Create auth account based on method
-      if (signupMethod === 'email') {
-        const result = await supabase.auth.signUp({
-          email,
-          password,
-        });
-        authData = result.data;
-        authError = result.error;
-      } else {
-        // Phone signup
-        const cleanedPhone = phone.replace(/\D/g, '');
-        const formattedPhone = cleanedPhone.startsWith('1')
-          ? `+${cleanedPhone}`
-          : `+1${cleanedPhone}`;
-       
-        const result = await supabase.auth.signUp({
-          phone: formattedPhone,
-          password,
-        });
-        authData = result.data;
-        authError = result.error;
-      }
+      // Create auth account
+      const { data: authData, error: authError } = await supabase.auth.signUp({
+        email,
+        password,
+      });
 
       if (authError) throw authError;
 
@@ -180,99 +111,43 @@ export default function SignupScreen() {
       const userId = authData.user.id;
 
       // Create user profile
-      const profileData: any = {
-        id: userId,
-        username: username.toLowerCase(),
-        display_name: displayName,
-        coins: 0,
-        coins_sent: 0,
-        coins_received: 0,
-        created_at: new Date().toISOString(),
-      };
-
-      // Add email or phone to profile
-      if (signupMethod === 'email') {
-        profileData.email = email;
-      } else {
-        const cleanedPhone = phone.replace(/\D/g, '');
-        profileData.phone = cleanedPhone.startsWith('1')
-          ? `+${cleanedPhone}`
-          : `+1${cleanedPhone}`;
-      }
-
       const { error: profileError } = await supabase
         .from('users')
-        .insert(profileData);
+        .insert({
+          id: userId,
+          username: username.toLowerCase(),
+          display_name: displayName,
+          email: email,
+          coins: 0,
+          coins_sent: 0,
+          coins_received: 0,
+          created_at: new Date().toISOString(),
+        });
 
       if (profileError) throw profileError;
 
+      // Create notification preferences
+      await supabase
+        .from('notification_preferences')
+        .insert({
+          user_id: userId,
+          likes_enabled: true,
+          comments_enabled: true,
+          follows_enabled: true,
+          mentions_enabled: true,
+          coins_enabled: true,
+          push_enabled: true,
+          email_enabled: true,
+        });
+
       // Process referral code if provided
       if (referralCode.trim()) {
-        console.log('🎁 Processing referral code:', referralCode);
-      
         const referralResult = await processReferral(userId, referralCode.toUpperCase());
-      
+       
         if (referralResult.success) {
-          console.log('✅ Referral processed successfully');
-         
-          if (signupMethod === 'phone') {
-            Alert.alert(
-              'Verify Your Phone',
-              'A verification code has been sent to your phone. Please verify to complete signup.',
-              [
-                {
-                  text: 'Continue',
-                  onPress: () => router.replace('/(tabs)/home' as any),
-                },
-              ]
-            );
-          } else {
-            Alert.alert(
-              'Welcome! 🎉',
-              'Your account has been created! Check your email to verify your account.',
-              [
-                {
-                  text: 'Get Started',
-                  onPress: () => router.replace('/(tabs)/home' as any),
-                },
-              ]
-            );
-          }
-        } else {
-          console.log('⚠️ Invalid referral code, but signup succeeded');
-         
-          const message = signupMethod === 'phone'
-            ? 'Your account is ready! Please verify your phone number. (Referral code was invalid)'
-            : 'Your account is ready! Check your email. (Referral code was invalid)';
-         
-          Alert.alert(
-            'Account Created',
-            message,
-            [
-              {
-                text: 'Continue',
-                onPress: () => router.replace('/(tabs)/home' as any),
-              },
-            ]
-          );
-        }
-      } else {
-        // No referral code
-        if (signupMethod === 'phone') {
           Alert.alert(
             'Welcome! 🎉',
-            'A verification code has been sent to your phone number.',
-            [
-              {
-                text: 'Continue',
-                onPress: () => router.replace('/(tabs)/home' as any),
-              },
-            ]
-          );
-        } else {
-          Alert.alert(
-            'Welcome! 🎉',
-            'Your account has been created! Please check your email to verify.',
+            'Your account has been created and referral bonus applied! Check your email to verify your account.',
             [
               {
                 text: 'Get Started',
@@ -280,7 +155,29 @@ export default function SignupScreen() {
               },
             ]
           );
+        } else {
+          Alert.alert(
+            'Account Created',
+            'Your account is ready! Check your email to verify. (Referral code was invalid)',
+            [
+              {
+                text: 'Continue',
+                onPress: () => router.replace('/(tabs)/home' as any),
+              },
+            ]
+          );
         }
+      } else {
+        Alert.alert(
+          'Welcome! 🎉',
+          'Your account has been created! Please check your email to verify.',
+          [
+            {
+              text: 'Get Started',
+              onPress: () => router.replace('/(tabs)/home' as any),
+            },
+          ]
+        );
       }
 
     } catch (error: any) {
@@ -311,49 +208,6 @@ export default function SignupScreen() {
           </TouchableOpacity>
           <Text style={styles.title}>Create Account</Text>
           <Text style={styles.subtitle}>Join the community today!</Text>
-        </View>
-
-        {/* Signup Method Toggle */}
-        <View style={styles.methodToggle}>
-          <TouchableOpacity
-            style={[
-              styles.methodButton,
-              signupMethod === 'email' && styles.methodButtonActive
-            ]}
-            onPress={() => setSignupMethod('email')}
-          >
-            <Feather
-              name="mail"
-              size={20}
-              color={signupMethod === 'email' ? '#00ff88' : '#666'}
-            />
-            <Text style={[
-              styles.methodButtonText,
-              signupMethod === 'email' && styles.methodButtonTextActive
-            ]}>
-              Email
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[
-              styles.methodButton,
-              signupMethod === 'phone' && styles.methodButtonActive
-            ]}
-            onPress={() => setSignupMethod('phone')}
-          >
-            <Feather
-              name="phone"
-              size={20}
-              color={signupMethod === 'phone' ? '#00ff88' : '#666'}
-            />
-            <Text style={[
-              styles.methodButtonText,
-              signupMethod === 'phone' && styles.methodButtonTextActive
-            ]}>
-              Phone
-            </Text>
-          </TouchableOpacity>
         </View>
 
         {/* Form */}
@@ -394,44 +248,23 @@ export default function SignupScreen() {
             </Text>
           </View>
 
-          {/* Email or Phone based on method */}
-          {signupMethod === 'email' ? (
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Email</Text>
-              <View style={styles.inputContainer}>
-                <Feather name="mail" size={20} color="#00ff88" />
-                <TextInput
-                  style={styles.input}
-                  placeholder="email@example.com"
-                  placeholderTextColor="#666"
-                  value={email}
-                  onChangeText={setEmail}
-                  keyboardType="email-address"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                />
-              </View>
+          {/* Email */}
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>Email</Text>
+            <View style={styles.inputContainer}>
+              <Feather name="mail" size={20} color="#00ff88" />
+              <TextInput
+                style={styles.input}
+                placeholder="email@example.com"
+                placeholderTextColor="#666"
+                value={email}
+                onChangeText={setEmail}
+                keyboardType="email-address"
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
             </View>
-          ) : (
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Phone Number</Text>
-              <View style={styles.inputContainer}>
-                <Feather name="phone" size={20} color="#00ff88" />
-                <TextInput
-                  style={styles.input}
-                  placeholder="(123) 456-7890"
-                  placeholderTextColor="#666"
-                  value={phone}
-                  onChangeText={(text) => setPhone(formatPhoneNumber(text))}
-                  keyboardType="phone-pad"
-                  autoCapitalize="none"
-                />
-              </View>
-              <Text style={styles.helperText}>
-                You'll receive a verification code
-              </Text>
-            </View>
-          )}
+          </View>
 
           {/* Password */}
           <View style={styles.inputGroup}>
@@ -566,35 +399,6 @@ const styles = StyleSheet.create({
   subtitle: {
     fontSize: 16,
     color: '#666',
-  },
-  methodToggle: {
-    flexDirection: 'row',
-    backgroundColor: '#0a0a0a',
-    borderRadius: 12,
-    padding: 4,
-    marginBottom: 24,
-    borderWidth: 1,
-    borderColor: '#1a1a1a',
-  },
-  methodButton: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 12,
-    borderRadius: 10,
-    gap: 8,
-  },
-  methodButtonActive: {
-    backgroundColor: 'rgba(0, 255, 136, 0.1)',
-  },
-  methodButtonText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#666',
-  },
-  methodButtonTextActive: {
-    color: '#00ff88',
   },
   form: {
     flex: 1,
