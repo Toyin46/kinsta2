@@ -1,4 +1,4 @@
-// app/(tabs)/explore.tsx - COMPLETE FIXED VERSION
+// app/(tabs)/explore.tsx - FIXED VERSION
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
@@ -20,7 +20,7 @@ import { supabase } from '@/config/supabase';
 import { useRouter } from 'expo-router';
 
 const { width } = Dimensions.get('window');
-const GRID_ITEM_SIZE = (width - 32) / 3; // 3 columns with gaps
+const GRID_ITEM_SIZE = (width - 32) / 3;
 
 type TabType = 'discover' | 'trending' | 'users';
 
@@ -88,7 +88,7 @@ export default function ExploreScreen() {
 
   const loadFollowingStatus = async () => {
     if (!userId) return;
-   
+  
     try {
       const { data, error } = await supabase
         .from('follows')
@@ -171,7 +171,6 @@ export default function ExploreScreen() {
 
   const loadTrendingPosts = async () => {
     try {
-      // Get posts from the last 7 days sorted by engagement
       const sevenDaysAgo = new Date();
       sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 
@@ -186,6 +185,7 @@ export default function ExploreScreen() {
           likes_count,
           comments_count,
           coins_received,
+          views_count,
           created_at,
           is_published,
           users!posts_user_id_fkey (
@@ -196,27 +196,34 @@ export default function ExploreScreen() {
         `)
         .eq('is_published', true)
         .not('media_url', 'is', null)
-        .gte('created_at', sevenDaysAgo.toISOString())
-        .order('likes_count', { ascending: false })
-        .order('comments_count', { ascending: false })
-        .limit(50);
+        .gte('created_at', sevenDaysAgo.toISOString());
 
       if (error) throw error;
 
-      const formattedPosts = (data || []).map((post: any) => ({
-        id: post.id,
-        user_id: post.user_id,
-        username: post.users?.username || 'unknown',
-        display_name: post.users?.display_name || 'Unknown User',
-        user_photo_url: post.users?.avatar_url,
-        media_url: post.media_url,
-        media_type: post.media_type || 'image',
-        caption: post.caption || '',
-        likes_count: post.likes_count || 0,
-        comments_count: post.comments_count || 0,
-        coins_received: post.coins_received || 0,
-        created_at: post.created_at,
-      }));
+      // Sort by engagement score (likes + comments + views)
+      const formattedPosts = (data || [])
+        .map((post: any) => ({
+          id: post.id,
+          user_id: post.user_id,
+          username: post.users?.username || 'unknown',
+          display_name: post.users?.display_name || 'Unknown User',
+          user_photo_url: post.users?.avatar_url,
+          media_url: post.media_url,
+          media_type: post.media_type || 'image',
+          caption: post.caption || '',
+          likes_count: post.likes_count || 0,
+          comments_count: post.comments_count || 0,
+          coins_received: post.coins_received || 0,
+          views_count: post.views_count || 0,
+          created_at: post.created_at,
+          engagement_score:
+            (post.likes_count || 0) * 3 +
+            (post.comments_count || 0) * 5 +
+            (post.views_count || 0) * 0.1 +
+            (post.coins_received || 0) * 10
+        }))
+        .sort((a, b) => b.engagement_score - a.engagement_score)
+        .slice(0, 50);
 
       setTrendingPosts(formattedPosts);
     } catch (error) {
@@ -262,7 +269,6 @@ export default function ExploreScreen() {
         })
       );
 
-      // Filter out users with no posts and sort by engagement
       const activeUsers = usersWithCounts
         .filter(u => u.posts_count > 0)
         .sort((a, b) => (b.followers + b.posts_count) - (a.followers + a.posts_count));
@@ -280,7 +286,6 @@ export default function ExploreScreen() {
     try {
       const searchTerm = searchQuery.toLowerCase().trim();
 
-      // Search posts
       const { data: postsData, error: postsError } = await supabase
         .from('posts')
         .select(`
@@ -308,7 +313,6 @@ export default function ExploreScreen() {
 
       if (postsError) throw postsError;
 
-      // Search users
       const { data: usersData, error: usersError } = await supabase
         .from('users')
         .select('username, display_name')
@@ -319,7 +323,6 @@ export default function ExploreScreen() {
 
       const userIds = (usersData || []).map(u => u.username);
 
-      // Combine results
       const allResults = (postsData || [])
         .map((post: any) => ({
           id: post.id,
@@ -361,7 +364,6 @@ export default function ExploreScreen() {
   };
 
   const handlePostPress = (post: Post) => {
-    // Navigate to post detail or home feed
     router.push('/(tabs)/' as any);
   };
 
@@ -384,7 +386,6 @@ export default function ExploreScreen() {
       const isCurrentlyFollowing = followingUsers.has(targetUser.id);
 
       if (isCurrentlyFollowing) {
-        // Unfollow
         const { error: deleteError } = await supabase
           .from('follows')
           .delete()
@@ -393,7 +394,6 @@ export default function ExploreScreen() {
 
         if (deleteError) throw deleteError;
 
-        // Update follower count
         const { data: userData } = await supabase
           .from('users')
           .select('followers')
@@ -405,7 +405,6 @@ export default function ExploreScreen() {
           .update({ followers: Math.max(0, (userData?.followers || 0) - 1) })
           .eq('id', targetUser.id);
 
-        // Update local state
         const newFollowingSet = new Set(followingUsers);
         newFollowingSet.delete(targetUser.id);
         setFollowingUsers(newFollowingSet);
@@ -418,7 +417,6 @@ export default function ExploreScreen() {
           )
         );
       } else {
-        // Follow
         const { error: insertError } = await supabase
           .from('follows')
           .insert({
@@ -434,7 +432,6 @@ export default function ExploreScreen() {
           throw insertError;
         }
 
-        // Update follower count
         const { data: userData } = await supabase
           .from('users')
           .select('followers')
@@ -446,7 +443,6 @@ export default function ExploreScreen() {
           .update({ followers: (userData?.followers || 0) + 1 })
           .eq('id', targetUser.id);
 
-        // Update local state
         const newFollowingSet = new Set(followingUsers);
         newFollowingSet.add(targetUser.id);
         setFollowingUsers(newFollowingSet);
@@ -498,7 +494,7 @@ export default function ExploreScreen() {
 
   const renderUserCard = ({ item }: { item: UserProfile }) => {
     const isFollowing = followingUsers.has(item.id);
-   
+  
     return (
       <TouchableOpacity
         style={styles.userCard}
@@ -570,109 +566,24 @@ export default function ExploreScreen() {
     );
   };
 
-  const renderContent = () => {
-    // Search results
+  // Get the current posts to display
+  const getCurrentPosts = () => {
     if (searchQuery.length > 0) {
-      if (searching) {
-        return (
-          <View style={styles.centerContainer}>
-            <ActivityIndicator size="large" color="#00ff88" />
-            <Text style={styles.loadingText}>Searching...</Text>
-          </View>
-        );
-      }
-
-      if (searchResults.length === 0) {
-        return renderEmptyState();
-      }
-
-      return (
-        <FlatList
-          data={searchResults}
-          renderItem={renderGridPost}
-          keyExtractor={item => item.id}
-          numColumns={3}
-          columnWrapperStyle={styles.gridRow}
-          contentContainerStyle={styles.gridContainer}
-          showsVerticalScrollIndicator={false}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={onRefresh}
-              tintColor="#00ff88"
-            />
-          }
-        />
-      );
+      return searchResults;
     }
-
-    // Tab content
+   
     switch (activeTab) {
       case 'discover':
-        if (allPosts.length === 0) return renderEmptyState();
-        return (
-          <FlatList
-            data={allPosts}
-            renderItem={renderGridPost}
-            keyExtractor={item => item.id}
-            numColumns={3}
-            columnWrapperStyle={styles.gridRow}
-            contentContainerStyle={styles.gridContainer}
-            showsVerticalScrollIndicator={false}
-            refreshControl={
-              <RefreshControl
-                refreshing={refreshing}
-                onRefresh={onRefresh}
-                tintColor="#00ff88"
-              />
-            }
-          />
-        );
-
+        return allPosts;
       case 'trending':
-        if (trendingPosts.length === 0) return renderEmptyState();
-        return (
-          <FlatList
-            data={trendingPosts}
-            renderItem={renderGridPost}
-            keyExtractor={item => item.id}
-            numColumns={3}
-            columnWrapperStyle={styles.gridRow}
-            contentContainerStyle={styles.gridContainer}
-            showsVerticalScrollIndicator={false}
-            refreshControl={
-              <RefreshControl
-                refreshing={refreshing}
-                onRefresh={onRefresh}
-                tintColor="#00ff88"
-              />
-            }
-          />
-        );
-
-      case 'users':
-        if (suggestedUsers.length === 0) return renderEmptyState();
-        return (
-          <FlatList
-            data={suggestedUsers}
-            renderItem={renderUserCard}
-            keyExtractor={item => item.id}
-            contentContainerStyle={styles.userListContainer}
-            showsVerticalScrollIndicator={false}
-            refreshControl={
-              <RefreshControl
-                refreshing={refreshing}
-                onRefresh={onRefresh}
-                tintColor="#00ff88"
-              />
-            }
-          />
-        );
-
+        return trendingPosts;
       default:
-        return null;
+        return [];
     }
   };
+
+  const currentPosts = getCurrentPosts();
+  const showGridView = activeTab !== 'users';
 
   if (loading) {
     return (
@@ -702,7 +613,6 @@ export default function ExploreScreen() {
         </View>
       </LinearGradient>
 
-      {/* Search Bar */}
       <View style={styles.searchContainer}>
         <View style={styles.searchBar}>
           <Ionicons name="search" size={20} color="#00ff88" />
@@ -723,7 +633,6 @@ export default function ExploreScreen() {
         </View>
       </View>
 
-      {/* Tabs */}
       {searchQuery.length === 0 && (
         <View style={styles.tabsContainer}>
           <TouchableOpacity
@@ -770,8 +679,54 @@ export default function ExploreScreen() {
         </View>
       )}
 
-      {/* Content */}
-      {renderContent()}
+      {searching ? (
+        <View style={styles.centerContainer}>
+          <ActivityIndicator size="large" color="#00ff88" />
+          <Text style={styles.loadingText}>Searching...</Text>
+        </View>
+      ) : showGridView ? (
+        currentPosts.length === 0 ? (
+          renderEmptyState()
+        ) : (
+          <FlatList
+            key="grid-view"
+            data={currentPosts}
+            renderItem={renderGridPost}
+            keyExtractor={item => item.id}
+            numColumns={3}
+            columnWrapperStyle={styles.gridRow}
+            contentContainerStyle={styles.gridContainer}
+            showsVerticalScrollIndicator={false}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                tintColor="#00ff88"
+              />
+            }
+          />
+        )
+      ) : (
+        suggestedUsers.length === 0 ? (
+          renderEmptyState()
+        ) : (
+          <FlatList
+            key="user-list"
+            data={suggestedUsers}
+            renderItem={renderUserCard}
+            keyExtractor={item => item.id}
+            contentContainerStyle={styles.userListContainer}
+            showsVerticalScrollIndicator={false}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                tintColor="#00ff88"
+              />
+            }
+          />
+        )
+      )}
     </View>
   );
 }
