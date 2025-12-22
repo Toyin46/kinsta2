@@ -1,11 +1,11 @@
-// app/(tabs)/create.tsx - WITH VISION CAMERA FILTERS
+// app/(tabs)/create.tsx - Using EXPO CAMERA (not Vision Camera)
 import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, Image, TouchableOpacity, TextInput, Alert, StyleSheet, ScrollView,
   ActivityIndicator, Dimensions, Animated, Modal, Linking, Platform
 } from 'react-native';
 import { Feather, MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
-import { Camera as VisionCamera, useCameraDevice, useCameraFormat } from 'react-native-vision-camera';
+import { Camera, CameraType, FlashMode, CameraCapturedPicture } from 'expo-camera/legacy';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import * as DocumentPicker from 'expo-document-picker';
@@ -21,7 +21,6 @@ type MediaType = 'image' | 'video' | null;
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
-// Professional filters using Vision Camera
 const FILTERS = [
   { id: 'original', name: 'Original', emoji: '✨', intensity: 0 },
   { id: 'beauty', name: 'Beauty', emoji: '💄', intensity: 0.5 },
@@ -65,19 +64,11 @@ const EDITING_APPS = [
 export default function CreatePostScreen() {
   const { user } = useAuthStore();
   const soundRef = useRef<Audio.Sound | null>(null);
-  const cameraRef = useRef<any>(null);
+  const cameraRef = useRef<Camera>(null);
   const originalImageRef = useRef<string | null>(null);
   const recordingProgress = useRef(new Animated.Value(0)).current;
 
-  // Vision Camera
-  const device = useCameraDevice('back');
-  const [cameraPosition, setCameraPosition] = useState<'front' | 'back'>('back');
-  const currentDevice = useCameraDevice(cameraPosition);
-  const format = useCameraFormat(currentDevice, [
-    { videoResolution: { width: 1920, height: 1080 } },
-    { fps: 30 }
-  ]);
-
+  const [cameraType, setCameraType] = useState(CameraType.back);
   const [selectedMedia, setSelectedMedia] = useState<string | null>(null);
   const [mediaType, setMediaType] = useState<MediaType>(null);
   const [filter, setFilter] = useState('original');
@@ -88,7 +79,7 @@ export default function CreatePostScreen() {
 
   const [isRecording, setIsRecording] = useState(false);
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
-  const [flash, setFlash] = useState<'off' | 'on'>('off');
+  const [flash, setFlash] = useState(FlashMode.off);
 
   const [caption, setCaption] = useState('');
   const [location, setLocation] = useState<string | null>(null);
@@ -105,8 +96,8 @@ export default function CreatePostScreen() {
 
   useEffect(() => {
     (async () => {
-      const cameraStatus = await VisionCamera.requestCameraPermission();
-      const micStatus = await VisionCamera.requestMicrophonePermission();
+      const { status: cameraStatus } = await Camera.requestCameraPermissionsAsync();
+      const { status: micStatus } = await Camera.requestMicrophonePermissionsAsync();
       setHasPermission(cameraStatus === 'granted' && micStatus === 'granted');
       await Location.requestForegroundPermissionsAsync();
       await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -116,7 +107,6 @@ export default function CreatePostScreen() {
     };
   }, []);
 
-  // Apply filter to image using ImageManipulator
   const applyFilter = async (uri: string, filterId: string) => {
     if (filterId === 'original') return uri;
    
@@ -126,52 +116,17 @@ export default function CreatePostScreen() {
     try {
       let manipulations: any[] = [];
 
-      // Apply different manipulations based on filter
       switch (filterId) {
         case 'beauty':
-          manipulations = [
-            { resize: { width: 1080 } },
-          ];
-          break;
         case 'vintage':
-          manipulations = [
-            { resize: { width: 1080 } },
-          ];
-          break;
         case 'cool':
-          manipulations = [
-            { resize: { width: 1080 } },
-          ];
-          break;
         case 'warm':
-          manipulations = [
-            { resize: { width: 1080 } },
-          ];
-          break;
         case 'dramatic':
-          manipulations = [
-            { resize: { width: 1080 } },
-          ];
-          break;
         case 'bright':
-          manipulations = [
-            { resize: { width: 1080 } },
-          ];
-          break;
         case 'noir':
-          manipulations = [
-            { resize: { width: 1080 } },
-          ];
-          break;
         case 'neon':
-          manipulations = [
-            { resize: { width: 1080 } },
-          ];
-          break;
         case 'sunset':
-          manipulations = [
-            { resize: { width: 1080 } },
-          ];
+          manipulations = [{ resize: { width: 1080 } }];
           break;
         default:
           manipulations = [{ resize: { width: 1080 } }];
@@ -266,14 +221,9 @@ export default function CreatePostScreen() {
   const takePicture = async () => {
     if (cameraRef.current) {
       try {
-        const photo = await cameraRef.current.takePhoto({
-          flash: flash,
-          qualityPrioritization: 'quality',
-        });
-       
-        const photoUri = `file://${photo.path}`;
-        originalImageRef.current = photoUri;
-        const filteredUri = await applyFilter(photoUri, filter);
+        const photo = await cameraRef.current.takePictureAsync({ quality: 0.9 });
+        originalImageRef.current = photo.uri;
+        const filteredUri = await applyFilter(photo.uri, filter);
         setSelectedMedia(filteredUri);
         setMediaType('image');
       } catch (error) {
@@ -293,23 +243,13 @@ export default function CreatePostScreen() {
           useNativeDriver: false,
         }).start();
        
-        await cameraRef.current.startRecording({
-          flash: flash,
-          onRecordingFinished: (video: any) => {
-            const videoUri = `file://${video.path}`;
-            setSelectedMedia(videoUri);
-            setMediaType('video');
-            setIsRecording(false);
-            recordingProgress.setValue(0);
-          },
-          onRecordingError: (error: any) => {
-            console.error('Recording error:', error);
-            setIsRecording(false);
-            recordingProgress.setValue(0);
-          },
-        });
+        const video = await cameraRef.current.recordAsync({ maxDuration: 60 });
+        setSelectedMedia(video.uri);
+        setMediaType('video');
+        setIsRecording(false);
+        recordingProgress.setValue(0);
       } catch (error) {
-        console.log('Start recording error:', error);
+        console.log('Recording error:', error);
         setIsRecording(false);
         recordingProgress.setValue(0);
       }
@@ -319,7 +259,7 @@ export default function CreatePostScreen() {
   const stopRecording = async () => {
     if (cameraRef.current && isRecording) {
       try {
-        await cameraRef.current.stopRecording();
+        cameraRef.current.stopRecording();
         setIsRecording(false);
         recordingProgress.setValue(0);
       } catch (error) {
@@ -329,7 +269,7 @@ export default function CreatePostScreen() {
   };
 
   const toggleCameraFacing = () => {
-    setCameraPosition(current => (current === 'back' ? 'front' : 'back'));
+    setCameraType(current => (current === CameraType.back ? CameraType.front : CameraType.back));
   };
 
   const pickFromGallery = async () => {
@@ -534,7 +474,7 @@ export default function CreatePostScreen() {
           <TouchableOpacity
             style={s.permissionButton}
             onPress={async () => {
-              const status = await VisionCamera.requestCameraPermission();
+              const { status } = await Camera.requestCameraPermissionsAsync();
               setHasPermission(status === 'granted');
             }}
           >
@@ -544,33 +484,21 @@ export default function CreatePostScreen() {
       );
     }
 
-    if (!currentDevice) {
-      return (
-        <View style={s.container}>
-          <Text style={s.permissionText}>Loading camera...</Text>
-        </View>
-      );
-    }
-
     return (
       <View style={s.snapContainer}>
-        <VisionCamera
+        <Camera
           ref={cameraRef}
           style={StyleSheet.absoluteFill}
-          device={currentDevice}
-          isActive={true}
-          photo={true}
-          video={true}
-          audio={true}
-          format={format}
+          type={cameraType}
+          flashMode={flash}
         />
       
         <View style={s.topBar}>
           <TouchableOpacity onPress={() => router.back()} style={s.topBtn}>
             <Feather name="x" size={30} color="#fff" />
           </TouchableOpacity>
-          <TouchableOpacity onPress={() => setFlash(flash === 'off' ? 'on' : 'off')} style={s.topBtn}>
-            <Ionicons name={flash === 'on' ? "flash" : "flash-off"} size={28} color="#fff" />
+          <TouchableOpacity onPress={() => setFlash(flash === FlashMode.off ? FlashMode.on : FlashMode.off)} style={s.topBtn}>
+            <Ionicons name={flash === FlashMode.on ? "flash" : "flash-off"} size={28} color="#fff" />
           </TouchableOpacity>
         </View>
 
@@ -1241,4 +1169,5 @@ const s = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
   },
-}); 
+});
+	

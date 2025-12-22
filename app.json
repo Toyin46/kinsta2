@@ -59,9 +59,6 @@
           "backgroundColor": "#000000"
         }
       },
-      "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false,
-      "useNextNotificationsApi": true,
       "permissions": [
         "CAMERA",
         "RECORD_AUDIO",
@@ -71,7 +68,6 @@
         "READ_MEDIA_VIDEO",
         "INTERNET",
         "ACCESS_NETWORK_STATE",
-        "com.google.android.gms.permission.AD_ID",
         "POST_NOTIFICATIONS"
       ],
       "config": {
@@ -101,11 +97,7 @@
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 200,
           "resizeMode": "contain",
-          "backgroundColor": "#ffffff",
-          "dark": {
-            "image": "./assets/images/splash-icon.png",
-            "backgroundColor": "#000000"
-          }
+          "backgroundColor": "#ffffff"
         }
       ],
       [
@@ -113,8 +105,7 @@
         {
           "icon": "./assets/images/notification-icon.png",
           "color": "#00ff88",
-          "sounds": [],
-          "mode": "production"
+          "sounds": []
         }
       ],
       "expo-audio",
@@ -144,13 +135,6 @@
       ],
       "expo-secure-store",
       [
-        "react-native-vision-camera",
-        {
-          "cameraPermissionText": "Allow Kinsta to access your camera",
-          "enableCodeScanner": false
-        }
-      ],
-      [
         "expo-build-properties",
         {
           "android": {
@@ -160,12 +144,10 @@
             "buildToolsVersion": "34.0.0"
           }
         }
-      ],
-      "react-native-google-mobile-ads"
+      ]
     ],
     "experiments": {
-      "typedRoutes": true,
-      "reactCompiler": true
+      "typedRoutes": true
     },
     "extra": {
       "router": {
@@ -183,5 +165,4 @@
       "url": "https://u.expo.dev/cc54ae3d-1746-409a-8041-cead41240d56"
     }
   }
-} 
-	
+}
