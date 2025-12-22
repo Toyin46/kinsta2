@@ -1,4 +1,4 @@
-// app/(tabs)/videos.tsx - FIXED WITH COMMENT LIKES & REPLIES
+// app/(tabs)/videos.tsx - WITH NATIVE ADMOB ADS
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import {
   View, Text, StyleSheet, FlatList, Image, TouchableOpacity, Dimensions,
@@ -10,9 +10,15 @@ import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAuthStore } from '@/store/authStore';
 import { supabase } from '@/config/supabase';
 import { useRouter } from 'expo-router';
+import { BannerAd, BannerAdSize, TestIds } from 'react-native-google-mobile-ads';
 
 const { width, height } = Dimensions.get('window');
 const LIKE_REWARD = 0.01;
+
+// YOUR ADMOB AD UNIT IDs
+const BANNER_AD_UNIT_ID = __DEV__
+  ? TestIds.BANNER
+  : 'ca-app-pub-8235065812461074/4176727692';
 
 interface Post {
   id: string; user_id: string; username: string; display_name: string;
@@ -27,6 +33,90 @@ interface Comment {
   display_name: string; user_photo_url?: string; text: string;
   likes_count: number; replies_count: number; liked_by: string[];
   parent_comment_id?: string; created_at: string;
+}
+
+// Ad Item Interface
+interface AdItem {
+  id: string;
+  isAd: true;
+  adIndex: number;
+}
+
+type FeedItem = Post | AdItem;
+
+function isAd(item: FeedItem): item is AdItem {
+  return 'isAd' in item && item.isAd === true;
+}
+
+// Native Ad Component (looks like a video post)
+function NativeAdPost({ adIndex }: { adIndex: number }) {
+  const [adLoaded, setAdLoaded] = useState(false);
+  const [adError, setAdError] = useState(false);
+
+  return (
+    <View style={styles.videoContainer}>
+      <View style={styles.adContainer}>
+        {/* Ad Label */}
+        <View style={styles.adBadge}>
+          <Text style={styles.adBadgeText}>Sponsored</Text>
+        </View>
+
+        {/* Banner Ad */}
+        <View style={styles.adBannerContainer}>
+          <BannerAd
+            unitId={BANNER_AD_UNIT_ID}
+            size={BannerAdSize.LARGE_BANNER}
+            requestOptions={{
+              requestNonPersonalizedAdsOnly: false,
+            }}
+            onAdLoaded={() => {
+              setAdLoaded(true);
+              setAdError(false);
+            }}
+            onAdFailedToLoad={(error) => {
+              console.log('Ad failed to load:', error);
+              setAdError(true);
+            }}
+          />
+        </View>
+
+        {/* Ad Content Placeholder (while ad loads) */}
+        {!adLoaded && !adError && (
+          <View style={styles.adPlaceholder}>
+            <ActivityIndicator size="large" color="#00ff88" />
+            <Text style={styles.adPlaceholderText}>Loading ad...</Text>
+          </View>
+        )}
+
+        {/* Error State */}
+        {adError && (
+          <View style={styles.adPlaceholder}>
+            <Feather name="alert-circle" size={48} color="#666" />
+            <Text style={styles.adPlaceholderText}>Ad not available</Text>
+          </View>
+        )}
+
+        {/* Decorative content around ad */}
+        <View style={styles.adDecoration}>
+          <View style={styles.adInfoBox}>
+            <MaterialCommunityIcons name="star" size={24} color="#00ff88" />
+            <Text style={styles.adInfoText}>Support Kinsta by viewing ads</Text>
+          </View>
+         
+          <View style={styles.adBenefits}>
+            <View style={styles.adBenefitItem}>
+              <Feather name="check-circle" size={16} color="#00ff88" />
+              <Text style={styles.adBenefitText}>Free content</Text>
+            </View>
+            <View style={styles.adBenefitItem}>
+              <Feather name="check-circle" size={16} color="#00ff88" />
+              <Text style={styles.adBenefitText}>Support creators</Text>
+            </View>
+          </View>
+        </View>
+      </View>
+    </View>
+  );
 }
 
 function VideoPost({
@@ -203,6 +293,7 @@ export default function VideosScreen() {
   const userId = user?.id || (user as any)?.id;
 
   const [posts, setPosts] = useState<Post[]>([]);
+  const [feedItems, setFeedItems] = useState<FeedItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeIndex, setActiveIndex] = useState(0);
   const [selectedPost, setSelectedPost] = useState<Post | null>(null);
@@ -253,10 +344,10 @@ export default function VideosScreen() {
         commentsMap.set(comment.post_id, (commentsMap.get(comment.post_id) || 0) + 1);
       });
 
-      setPosts((data || []).map((p: any) => {
+      const postsArray = (data || []).map((p: any) => {
         const likes = likesMap.get(p.id) || { count: 0, users: [] };
         const comments = commentsMap.get(p.id) || 0;
-      
+     
         return {
           id: p.id, user_id: p.user_id, username: p.users?.username || 'unknown',
           display_name: p.users?.display_name || 'Unknown', user_photo_url: p.users?.avatar_url,
@@ -266,8 +357,34 @@ export default function VideosScreen() {
           location: p.location, music_name: p.music_name, music_artist: p.music_artist,
           created_at: p.created_at,
         };
-      }));
-    } catch (e: any) { Alert.alert('Error', e.message || 'Failed to load videos'); } finally { setLoading(false); }
+      });
+
+      setPosts(postsArray);
+
+      // Insert ads every 4 posts
+      const itemsWithAds: FeedItem[] = [];
+      let adCounter = 0;
+     
+      postsArray.forEach((post, index) => {
+        itemsWithAds.push(post);
+       
+        // Insert ad after every 4 posts
+        if ((index + 1) % 4 === 0) {
+          itemsWithAds.push({
+            id: `ad_${adCounter}`,
+            isAd: true,
+            adIndex: adCounter,
+          });
+          adCounter++;
+        }
+      });
+
+      setFeedItems(itemsWithAds);
+    } catch (e: any) {
+      Alert.alert('Error', e.message || 'Failed to load videos');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const onViewableItemsChanged = useRef(({ viewableItems }: any) => {
@@ -280,7 +397,7 @@ export default function VideosScreen() {
     try {
       const { data: post } = await supabase.from('posts').select('views_count, viewed_by').eq('id', postId).single();
       if (!post) return;
-    
+   
       const viewedBy = post.viewed_by || [];
       if (viewedBy.includes(userId)) return;
 
@@ -311,23 +428,23 @@ export default function VideosScreen() {
   const handleLike = useCallback(async (post: Post) => {
     if (!userId) { Alert.alert('Login Required', 'Please login to like videos'); return; }
     const isLiked = post.liked_by?.includes(userId);
- 
+
     if (isLiked) {
       try {
         await supabase.from('likes').delete().eq('post_id', post.id).eq('user_id', userId);
-      
+     
         const { data: ownerData } = await supabase.from('users').select('coins').eq('id', post.user_id).single();
         if (ownerData) {
           await supabase.from('users').update({ coins: Math.max(0, ownerData.coins - LIKE_REWARD) }).eq('id', post.user_id);
           await supabase.from('posts').update({ coins_received: Math.max(0, post.coins_received - LIKE_REWARD) }).eq('id', post.id);
         }
-     
+    
         await loadVideos();
       } catch (err: any) { console.error('Unlike error:', err); Alert.alert('Error', err.message || 'Unlike failed'); }
     } else {
       try {
         await supabase.from('likes').insert({ post_id: post.id, user_id: userId });
-     
+    
         const { data: ownerData } = await supabase.from('users').select('coins').eq('id', post.user_id).single();
         if (ownerData) {
           const newOwnerCoins = (ownerData.coins || 0) + LIKE_REWARD;
@@ -338,7 +455,7 @@ export default function VideosScreen() {
             description: `Earned ${LIKE_REWARD} coins from a like`, status: 'completed'
           });
         }
-     
+    
         await loadVideos();
       } catch (err: any) { console.error('Like error:', err); Alert.alert('Error', err.message || 'Like failed'); }
     }
@@ -350,17 +467,17 @@ export default function VideosScreen() {
       try {
         await supabase.from('likes').insert({ post_id: post.id, user_id: userId });
         await supabase.from('posts').update({ coins_received: post.coins_received + coinAmount + LIKE_REWARD }).eq('id', post.id);
-     
+    
         await supabase.from('users').update({ coins: (userProfile?.coins || 0) - coinAmount }).eq('id', userId);
-     
+    
         const { data: receiver } = await supabase.from('users').select('coins').eq('id', post.user_id).single();
         await supabase.from('users').update({ coins: (receiver?.coins || 0) + coinAmount + LIKE_REWARD }).eq('id', post.user_id);
-     
+    
         await supabase.from('transactions').insert([
           { user_id: userId, type: 'spent', amount: coinAmount, description: `Sent ${coinAmount} coins to @${post.username}`, status: 'completed' },
           { user_id: post.user_id, type: 'received', amount: coinAmount + LIKE_REWARD, description: `Received ${coinAmount} coins tip + ${LIKE_REWARD} like reward`, status: 'completed' }
         ]);
-     
+    
         await loadVideos();
         await loadProfile();
         Alert.alert('Success! 💎', `You sent ${coinAmount.toFixed(2)} coins to @${post.username}!`);
@@ -390,7 +507,7 @@ export default function VideosScreen() {
     try {
       const { data } = await supabase.from('comments').select(`*, users!comments_user_id_fkey (username, display_name, avatar_url)`)
         .eq('post_id', post.id).order('created_at', { ascending: false });
-    
+   
       const commentIds = (data || []).map(c => c.id);
       const { data: commentLikesData } = await supabase.from('comment_likes').select('comment_id, user_id').in('comment_id', commentIds);
 
@@ -470,7 +587,7 @@ export default function VideosScreen() {
   const renderComment = useCallback(({ item }: { item: Comment }) => {
     const isLiked = userId ? item.liked_by?.includes(userId) : false;
     const isReply = !!item.parent_comment_id;
-  
+ 
     return (
       <View style={[styles.commentItem, isReply && styles.commentReply]}>
         {item.user_photo_url ? (
@@ -504,7 +621,29 @@ export default function VideosScreen() {
     );
   }, [userId, handleCommentLike]);
 
-  if (loading && posts.length === 0) {
+  const renderFeedItem = useCallback(({ item, index }: { item: FeedItem; index: number }) => {
+    if (isAd(item)) {
+      return <NativeAdPost adIndex={item.adIndex} />;
+    }
+   
+    return (
+      <VideoPost
+        item={item}
+        isActive={index === activeIndex}
+        onLike={handleLike}
+        onLikeWithTip={handleLikeWithTip}
+        onComment={handleComment}
+        onFollow={handleFollow}
+        onUserPress={handleUserPress}
+        onShare={handleShare}
+        onSaveMedia={saveMediaToGallery}
+        user={user}
+        onView={handleView}
+      />
+    );
+  }, [activeIndex, handleLike, handleLikeWithTip, handleComment, handleFollow, handleUserPress, handleShare, user, handleView]);
+
+  if (loading && feedItems.length === 0) {
     return (
       <View style={styles.container}>
         <View style={styles.header}>
@@ -534,15 +673,9 @@ export default function VideosScreen() {
 
       <FlatList
         ref={flatListRef}
-        data={posts}
-        renderItem={({ item, index }) => (
-          <VideoPost
-            item={item} isActive={index === activeIndex} onLike={handleLike} onLikeWithTip={handleLikeWithTip}
-            onComment={handleComment} onFollow={handleFollow} onUserPress={handleUserPress} onShare={handleShare}
-            onSaveMedia={saveMediaToGallery} user={user} onView={handleView}
-          />
-        )}
-        keyExtractor={item => item.id}
+        data={feedItems}
+        renderItem={renderFeedItem}
+        keyExtractor={(item) => item.id}
         pagingEnabled
         showsVerticalScrollIndicator={false}
         snapToInterval={height - 100}
@@ -628,6 +761,90 @@ const styles = StyleSheet.create({
   coinsHeaderText: { color: '#00ff88', fontWeight: 'bold', fontSize: 14 },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   loadingText: { marginTop: 12, fontSize: 16, color: '#666' },
+ 
+  // Ad Styles
+  adContainer: {
+    flex: 1,
+    backgroundColor: '#0a0a0a',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  adBadge: {
+    position: 'absolute',
+    top: 60,
+    right: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+    zIndex: 10,
+  },
+  adBadgeText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  adBannerContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginVertical: 20,
+  },
+  adPlaceholder: {
+    width: width - 40,
+    height: 200,
+    backgroundColor: '#1a1a1a',
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#333',
+    borderStyle: 'dashed',
+  },
+  adPlaceholderText: {
+    color: '#666',
+    fontSize: 16,
+    marginTop: 12,
+  },
+  adDecoration: {
+    width: '100%',
+    marginTop: 40,
+  },
+  adInfoBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#1a1a1a',
+    padding: 16,
+    borderRadius: 12,
+    gap: 12,
+    marginBottom: 20,
+  },
+  adInfoText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  adBenefits: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    gap: 16,
+  },
+  adBenefitItem: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1a1a1a',
+    padding: 12,
+    borderRadius: 8,
+    gap: 8,
+  },
+  adBenefitText: {
+    color: '#00ff88',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+
   videoContainer: { width, height: height - 100, backgroundColor: '#000', position: 'relative' },
   videoTouchable: { flex: 1 },
   video: { width: '100%', height: '100%' },
@@ -699,3 +916,4 @@ const styles = StyleSheet.create({
   coinSendButton: { flex: 1, backgroundColor: '#00ff88', padding: 16, borderRadius: 12, alignItems: 'center' },
   coinSendButtonText: { color: '#000', fontSize: 16, fontWeight: '700' },
 }); 
+	
