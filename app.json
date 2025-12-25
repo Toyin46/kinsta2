@@ -25,9 +25,11 @@
         "NSMicrophoneUsageDescription": "Allow Kinsta to record audio for videos.",
         "NSPhotoLibraryUsageDescription": "Allow Kinsta to access your photos.",
         "NSPhotoLibraryAddUsageDescription": "Allow Kinsta to save photos to your library.",
+        "NSLocationWhenInUseUsageDescription": "Allow Kinsta to access your location.",
         "UIBackgroundModes": [
           "remote-notification"
-        ]
+        ],
+        "GADApplicationIdentifier": "ca-app-pub-8235065812461074~5241579110"
       },
       "splash": {
         "image": "./assets/images/splash-icon.png",
@@ -66,6 +68,8 @@
         "WRITE_EXTERNAL_STORAGE",
         "READ_MEDIA_IMAGES",
         "READ_MEDIA_VIDEO",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
         "INTERNET",
         "ACCESS_NETWORK_STATE",
         "POST_NOTIFICATIONS"
@@ -77,11 +81,7 @@
     "web": {
       "output": "static",
       "favicon": "./assets/images/favicon.png",
-      "splash": {
-        "image": "./assets/images/splash-icon.png",
-        "resizeMode": "contain",
-        "backgroundColor": "#ffffff"
-      }
+      "bundler": "metro"
     },
     "notification": {
       "icon": "./assets/images/notification-icon.png",
@@ -91,6 +91,21 @@
     },
     "plugins": [
       "expo-router",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "minSdkVersion": 26,
+            "compileSdkVersion": 35,
+            "targetSdkVersion": 35,
+            "buildToolsVersion": "35.0.0",
+            "usesCleartextTraffic": true
+          },
+          "ios": {
+            "deploymentTarget": "15.1"
+          }
+        }
+      ],
       [
         "expo-splash-screen",
         {
@@ -133,16 +148,28 @@
           "cameraPermission": "Allow Kinsta to access your camera."
         }
       ],
-      "expo-secure-store",
       [
-        "expo-build-properties",
+        "expo-location",
         {
-          "android": {
-            "minSdkVersion": 26,
-            "compileSdkVersion": 34,
-            "targetSdkVersion": 34,
-            "buildToolsVersion": "34.0.0"
-          }
+          "locationAlwaysAndWhenInUsePermission": "Allow Kinsta to use your location."
+        }
+      ],
+      "expo-secure-store",
+      "@react-native-community/datetimepicker",
+      [
+        "@stripe/stripe-react-native",
+        {
+          "merchantIdentifier": "merchant.com.kinsta.kinsta2",
+          "enableGooglePay": true
+        }
+      ],
+      "expo-font",
+      [
+        "react-native-google-mobile-ads",
+        {
+          "androidAppId": "ca-app-pub-8235065812461074~5241579110",
+          "iosAppId": "ca-app-pub-8235065812461074~5241579110",
+          "delayAppMeasurementInit": true
         }
       ]
     ],
