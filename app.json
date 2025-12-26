@@ -100,7 +100,7 @@
             "targetSdkVersion": 35,
             "buildToolsVersion": "35.0.0",
             "usesCleartextTraffic": true,
-            "kotlinVersion": "1.9.25"
+            "kotlinVersion": "2.0.21"
           },
           "ios": {
             "deploymentTarget": "15.1"
@@ -192,5 +192,52 @@
     "updates": {
       "url": "https://u.expo.dev/cc54ae3d-1746-409a-8041-cead41240d56"
     }
+  }
+}
+```
+
+## **eas.json** (No changes needed - already correct)
+
+```json
+{
+  "cli": {
+    "version": ">= 13.2.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "android": {
+        "gradleCommand": ":app:assembleDebug",
+        "buildType": "apk"
+      },
+      "ios": {
+        "buildConfiguration": "Debug"
+      },
+      "channel": "development"
+    },
+    "preview": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "ios": {
+        "buildConfiguration": "Release"
+      },
+      "channel": "preview"
+    },
+    "production": {
+      "android": {
+        "buildType": "apk"
+      },
+      "ios": {
+        "buildConfiguration": "Release"
+      },
+      "channel": "production"
+    }
+  },
+  "submit": {
+    "production": {}
   }
 }
