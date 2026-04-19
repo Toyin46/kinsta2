@@ -174,8 +174,7 @@
           "delayAppMeasurementInit": true
         }
       ],
-      "react-native-permissions",
-      "react-native-audio-api"
+      "react-native-permissions"
     ],
     "experiments": {
       "typedRoutes": true
