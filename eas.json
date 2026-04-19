@@ -1,6 +1,7 @@
 {
   "cli": {
-    "version": ">= 5.0.0"
+    "version": ">= 13.2.0",
+    "appVersionSource": "remote"
   },
   "build": {
     "development": {
@@ -8,13 +9,40 @@
       "distribution": "internal",
       "android": {
         "gradleCommand": ":app:assembleDebug",
-        "buildType": "apk"
-      }
+        "buildType": "apk",
+        "resourceClass": "large"
+      },
+      "ios": {
+        "buildConfiguration": "Debug",
+        "resourceClass": "large"
+      },
+      "channel": "development"
+    },
+    "preview": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk",
+        "resourceClass": "large"
+      },
+      "ios": {
+        "buildConfiguration": "Release",
+        "resourceClass": "large"
+      },
+      "channel": "preview"
     },
     "production": {
       "android": {
-        "buildType": "apk"
-      }
+        "buildType": "apk",
+        "resourceClass": "large"
+      },
+      "ios": {
+        "buildConfiguration": "Release",
+        "resourceClass": "large"
+      },
+      "channel": "production"
     }
+  },
+  "submit": {
+    "production": {}
   }
 }
