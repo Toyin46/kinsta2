@@ -1,31 +1,31 @@
 {
   "expo": {
-    "name": "kinsta2",
+    "name": "LumVibe",
     "slug": "kinsta2",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "kinsta2",
+    "scheme": "lumvibe",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "splash": {
       "image": "./assets/images/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#000000"
     },
     "assetBundlePatterns": [
       "**/*"
     ],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.kinsta.kinsta2",
+      "bundleIdentifier": "com.lumvibe.app",
       "buildNumber": "1",
       "infoPlist": {
-        "NSCameraUsageDescription": "Allow Kinsta to access your camera to take photos and videos.",
-        "NSMicrophoneUsageDescription": "Allow Kinsta to record audio for videos.",
-        "NSPhotoLibraryUsageDescription": "Allow Kinsta to access your photos.",
-        "NSPhotoLibraryAddUsageDescription": "Allow Kinsta to save photos to your library.",
-        "NSLocationWhenInUseUsageDescription": "Allow Kinsta to access your location.",
+        "NSCameraUsageDescription": "Allow LumVibe to access your camera to take photos and videos.",
+        "NSMicrophoneUsageDescription": "Allow LumVibe to record audio for videos.",
+        "NSPhotoLibraryUsageDescription": "Allow LumVibe to access your photos.",
+        "NSPhotoLibraryAddUsageDescription": "Allow LumVibe to save photos to your library.",
+        "NSLocationWhenInUseUsageDescription": "Allow LumVibe to access your location.",
         "UIBackgroundModes": [
           "remote-notification"
         ],
@@ -34,7 +34,7 @@
       "splash": {
         "image": "./assets/images/splash-icon.png",
         "resizeMode": "contain",
-        "backgroundColor": "#ffffff",
+        "backgroundColor": "#000000",
         "dark": {
           "image": "./assets/images/splash-icon.png",
           "resizeMode": "contain",
@@ -43,18 +43,17 @@
       }
     },
     "android": {
-      "package": "com.kinsta.kinsta2",
+      "package": "com.lumvibe.app",
       "versionCode": 1,
+      "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/images/android-icon-foreground.png",
-        "backgroundImage": "./assets/images/android-icon-background.png",
-        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+        "foregroundImage": "./assets/images/adaptive-icon.png",
+        "backgroundColor": "#000000"
       },
       "splash": {
         "image": "./assets/images/splash-icon.png",
         "resizeMode": "contain",
-        "backgroundColor": "#ffffff",
+        "backgroundColor": "#000000",
         "dark": {
           "image": "./assets/images/splash-icon.png",
           "resizeMode": "contain",
@@ -62,17 +61,19 @@
         }
       },
       "permissions": [
-        "CAMERA",
-        "RECORD_AUDIO",
-        "READ_EXTERNAL_STORAGE",
-        "WRITE_EXTERNAL_STORAGE",
-        "READ_MEDIA_IMAGES",
-        "READ_MEDIA_VIDEO",
-        "ACCESS_FINE_LOCATION",
-        "ACCESS_COARSE_LOCATION",
-        "INTERNET",
-        "ACCESS_NETWORK_STATE",
-        "POST_NOTIFICATIONS"
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.INTERNET",
+        "android.permission.ACCESS_NETWORK_STATE",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.ACCESS_MEDIA_LOCATION"
       ],
       "config": {
         "googleMobileAdsAppId": "ca-app-pub-8235065812461074~5241579110"
@@ -80,11 +81,11 @@
     },
     "web": {
       "output": "static",
-      "favicon": "./assets/images/favicon.png",
+      "favicon": "./assets/images/icon.png",
       "bundler": "metro"
     },
     "notification": {
-      "icon": "./assets/images/notification-icon.png",
+      "icon": "./assets/images/icon.png",
       "color": "#00ff88",
       "androidMode": "default",
       "androidCollapsedTitle": "{{unread_count}} new notifications"
@@ -113,13 +114,13 @@
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 200,
           "resizeMode": "contain",
-          "backgroundColor": "#ffffff"
+          "backgroundColor": "#000000"
         }
       ],
       [
         "expo-notifications",
         {
-          "icon": "./assets/images/notification-icon.png",
+          "icon": "./assets/images/icon.png",
           "color": "#00ff88",
           "sounds": []
         }
@@ -129,30 +130,30 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Allow Kinsta to access your camera to take photos and videos.",
-          "microphonePermission": "Allow Kinsta to record audio for videos.",
+          "cameraPermission": "Allow LumVibe to access your camera to take photos and videos.",
+          "microphonePermission": "Allow LumVibe to record audio for videos.",
           "recordAudioAndroid": true
         }
       ],
       [
         "expo-media-library",
         {
-          "photosPermission": "Allow Kinsta to access your photos.",
-          "savePhotosPermission": "Allow Kinsta to save photos to your library.",
+          "photosPermission": "Allow LumVibe to access your photos.",
+          "savePhotosPermission": "Allow LumVibe to save photos to your library.",
           "isAccessMediaLocationEnabled": true
         }
       ],
       [
         "expo-image-picker",
         {
-          "photosPermission": "Allow Kinsta to access your photos.",
-          "cameraPermission": "Allow Kinsta to access your camera."
+          "photosPermission": "Allow LumVibe to access your photos.",
+          "cameraPermission": "Allow LumVibe to access your camera."
         }
       ],
       [
         "expo-location",
         {
-          "locationAlwaysAndWhenInUsePermission": "Allow Kinsta to use your location."
+          "locationAlwaysAndWhenInUsePermission": "Allow LumVibe to use your location."
         }
       ],
       "expo-secure-store",
@@ -160,7 +161,7 @@
       [
         "@stripe/stripe-react-native",
         {
-          "merchantIdentifier": "merchant.com.kinsta.kinsta2",
+          "merchantIdentifier": "merchant.com.lumvibe.app",
           "enableGooglePay": true
         }
       ],
@@ -172,7 +173,9 @@
           "iosAppId": "ca-app-pub-8235065812461074~5241579110",
           "delayAppMeasurementInit": true
         }
-      ]
+      ],
+      "react-native-permissions",
+      "react-native-audio-api"
     ],
     "experiments": {
       "typedRoutes": true
@@ -192,52 +195,5 @@
     "updates": {
       "url": "https://u.expo.dev/cc54ae3d-1746-409a-8041-cead41240d56"
     }
-  }
-}
-```
-
-## **eas.json** (No changes needed - already correct)
-
-```json
-{
-  "cli": {
-    "version": ">= 13.2.0",
-    "appVersionSource": "remote"
-  },
-  "build": {
-    "development": {
-      "developmentClient": true,
-      "distribution": "internal",
-      "android": {
-        "gradleCommand": ":app:assembleDebug",
-        "buildType": "apk"
-      },
-      "ios": {
-        "buildConfiguration": "Debug"
-      },
-      "channel": "development"
-    },
-    "preview": {
-      "distribution": "internal",
-      "android": {
-        "buildType": "apk"
-      },
-      "ios": {
-        "buildConfiguration": "Release"
-      },
-      "channel": "preview"
-    },
-    "production": {
-      "android": {
-        "buildType": "apk"
-      },
-      "ios": {
-        "buildConfiguration": "Release"
-      },
-      "channel": "production"
-    }
-  },
-  "submit": {
-    "production": {}
   }
 }
