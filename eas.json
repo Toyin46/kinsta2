@@ -9,35 +9,29 @@
       "distribution": "internal",
       "android": {
         "gradleCommand": ":app:assembleDebug",
-        "buildType": "apk",
-        "resourceClass": "large"
+        "buildType": "apk"
       },
       "ios": {
-        "buildConfiguration": "Debug",
-        "resourceClass": "large"
+        "buildConfiguration": "Debug"
       },
       "channel": "development"
     },
     "preview": {
       "distribution": "internal",
       "android": {
-        "buildType": "apk",
-        "resourceClass": "large"
+        "buildType": "apk"
       },
       "ios": {
-        "buildConfiguration": "Release",
-        "resourceClass": "large"
+        "buildConfiguration": "Release"
       },
       "channel": "preview"
     },
     "production": {
       "android": {
-        "buildType": "apk",
-        "resourceClass": "large"
+        "buildType": "apk"
       },
       "ios": {
-        "buildConfiguration": "Release",
-        "resourceClass": "large"
+        "buildConfiguration": "Release"
       },
       "channel": "production"
     }
