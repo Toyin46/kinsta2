@@ -1,42 +1,94 @@
-// app/(tabs)/_layout.tsx - FIXED VERSION
+// app/(tabs)/_layout.tsx
 import { Tabs, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { Feather } from '@expo/vector-icons';
 import { useAuthStore } from '../../store/authStore';
-import { useEffect } from 'react';
-import { Alert } from 'react-native';
+import { useEffect, useState } from 'react';
+import { Alert, View, StyleSheet } from 'react-native';
+import { supabase } from '../../config/supabase';
 
+// ── UNREAD DOT ────────────────────────────────────────────────
+// Shows a green dot on Messages tab when there are unread messages
+function UnreadDot({ userId }: { userId?: string }) {
+  const [hasUnread, setHasUnread] = useState(false);
+
+  useEffect(() => {
+    if (!userId) return;
+
+    const checkUnread = async () => {
+      try {
+        const { data } = await supabase
+          .from('conversation_participants')
+          .select('unread_count')
+          .eq('user_id', userId)
+          .gt('unread_count', 0)
+          .limit(1);
+        setHasUnread((data || []).length > 0);
+      } catch {
+        // Silently fail
+      }
+    };
+
+    checkUnread();
+
+    const channel = supabase
+      .channel(`unread:${userId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'conversation_participants',
+          filter: `user_id=eq.${userId}`,
+        },
+        () => checkUnread()
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [userId]);
+
+  if (!hasUnread) return null;
+
+  return <View style={styles.unreadDot} />;
+}
+
+// ── TAB LAYOUT ────────────────────────────────────────────────
 export default function TabLayout() {
   const { user, initialized } = useAuthStore();
   const router = useRouter();
 
-  // Redirect to login if not authenticated
   useEffect(() => {
     if (initialized && !user) {
       router.replace('/(auth)/login');
     }
   }, [initialized, user]);
 
-  // Don't render tabs until auth is initialized
-  if (!initialized) {
-    return null;
-  }
+  if (!initialized) return null;
 
   return (
     <Tabs
       screenOptions={{
-        tabBarActiveTintColor: '#667eea',
-        tabBarInactiveTintColor: '#9ca3af',
+        tabBarActiveTintColor: '#00ff88',
+        tabBarInactiveTintColor: '#555',
         headerShown: false,
         tabBarStyle: {
-          backgroundColor: '#fff',
+          backgroundColor: '#000',
           borderTopWidth: 1,
-          borderTopColor: '#e5e7eb',
-          height: 60,
-          paddingBottom: 8,
+          borderTopColor: '#1a1a1a',
+          height: 64,
+          paddingBottom: 10,
           paddingTop: 8,
+        },
+        tabBarLabelStyle: {
+          fontSize: 10,
+          fontWeight: '600',
         },
       }}
     >
+      {/* ── Home ─────────────────────────────────── */}
       <Tabs.Screen
         name="index"
         options={{
@@ -46,7 +98,8 @@ export default function TabLayout() {
           ),
         }}
       />
-      
+
+      {/* ── Explore ──────────────────────────────── */}
       <Tabs.Screen
         name="explore"
         options={{
@@ -56,36 +109,77 @@ export default function TabLayout() {
           ),
         }}
       />
-      
+
+      {/* ── Create ───────────────────────────────── */}
       <Tabs.Screen
         name="create"
         options={{
           title: 'Create',
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="add-circle" size={size} color={color} />
+          tabBarIcon: ({ color, focused }) => (
+            <View style={[
+              styles.createBtn,
+              { backgroundColor: focused ? '#00ff88' : '#1a1a1a' }
+            ]}>
+              <Ionicons
+                name="add"
+                size={26}
+                color={focused ? '#000' : '#00ff88'}
+              />
+            </View>
           ),
+          tabBarLabel: () => null,
         }}
         listeners={{
           tabPress: (e) => {
-            // Prevent navigation if not logged in
             if (!user) {
               e.preventDefault();
               Alert.alert(
                 'Login Required',
                 'Please login to create posts',
                 [
-                  {
-                    text: 'Go to Login',
-                    onPress: () => router.replace('/(auth)/login'),
-                  },
-                  { text: 'Cancel' }
+                  { text: 'Go to Login', onPress: () => router.replace('/(auth)/login') },
+                  { text: 'Cancel' },
                 ]
               );
             }
           },
         }}
       />
-      
+
+      {/* ── Messages ─────────────────────────────── */}
+      <Tabs.Screen
+        name="messages"
+        options={{
+          title: 'messages',
+          tabBarIcon: ({ color, size, focused }) => (
+            <View style={{ position: 'relative' }}>
+              <Ionicons
+                name={focused ? 'chatbubble' : 'chatbubble-outline'}
+                size={size}
+                color={color}
+              />
+              <UnreadDot userId={user?.id} />
+            </View>
+          ),
+        }}
+        listeners={{
+          tabPress: (e) => {
+            if (!user) {
+              e.preventDefault();
+              Alert.alert(
+                'Login Required',
+                'Please login to view your messages',
+                [
+                  { text: 'Go to Login', onPress: () => router.replace('/(auth)/login') },
+                  { text: 'Cancel' },
+                ]
+              );
+            }
+          },
+        }}
+      />
+
+      {/* ── Videos ───────────────────────────────── */}
       <Tabs.Screen
         name="videos"
         options={{
@@ -95,7 +189,34 @@ export default function TabLayout() {
           ),
         }}
       />
-      
+
+      {/* ── Marketplace ──────────────────────────── */}
+      <Tabs.Screen
+        name="marketplace"
+        options={{
+          title: 'Market',
+          tabBarIcon: ({ color, size }) => (
+            <Feather name="shopping-bag" size={size} color={color} />
+          ),
+        }}
+        listeners={{
+          tabPress: (e) => {
+            if (!user) {
+              e.preventDefault();
+              Alert.alert(
+                'Login Required',
+                'Please login to access the Marketplace',
+                [
+                  { text: 'Go to Login', onPress: () => router.replace('/(auth)/login') },
+                  { text: 'Cancel' },
+                ]
+              );
+            }
+          },
+        }}
+      />
+
+      {/* ── Profile ──────────────────────────────── */}
       <Tabs.Screen
         name="profile"
         options={{
@@ -106,18 +227,14 @@ export default function TabLayout() {
         }}
         listeners={{
           tabPress: (e) => {
-            // Prevent navigation if not logged in
             if (!user) {
               e.preventDefault();
               Alert.alert(
                 'Login Required',
                 'Please login to view your profile',
                 [
-                  {
-                    text: 'Go to Login',
-                    onPress: () => router.replace('/(auth)/login'),
-                  },
-                  { text: 'Cancel' }
+                  { text: 'Go to Login', onPress: () => router.replace('/(auth)/login') },
+                  { text: 'Cancel' },
                 ]
               );
             }
@@ -125,13 +242,40 @@ export default function TabLayout() {
         }}
       />
 
-      {/* Hide user-profile from tabs */}
+      {/* ── Hidden screens ───────────────────────── */}
+      <Tabs.Screen
+        name="notification"
+        options={{ href: null }}
+      />
       <Tabs.Screen
         name="user-profile"
-        options={{
-          href: null, // This hides it from the tab bar
-        }}
+        options={{ href: null }}
       />
     </Tabs>
   );
 }
+
+// ── STYLES ────────────────────────────────────────────────────
+const styles = StyleSheet.create({
+  createBtn: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 4,
+    borderWidth: 1.5,
+    borderColor: '#00ff88',
+  },
+  unreadDot: {
+    position: 'absolute',
+    top: -2,
+    right: -4,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#00ff88',
+    borderWidth: 1.5,
+    borderColor: '#000',
+  },
+}); 

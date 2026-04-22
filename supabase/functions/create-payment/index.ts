@@ -1,8 +1,9 @@
 // supabase/functions/create-payment/index.ts
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
-import Stripe from 'https://esm.sh/stripe@14.14.0?target=deno';
+import Stripe from 'https://esm.sh/stripe@14.21.0?target=deno';
 
-const stripe = new Stripe(Deno.env.get('sk_test_51ScyRkPu5ChQEBuHeMbQA08MygvXZXg8AjGAN5lnxKhG2oVzFyyNNl5UV1NMTo3KHr7ctOO9Ci1WyAV9bn7U6HC400UZdsDH5K') || '', {
+// ✅ Use environment variable instead of hardcoded key
+const stripe = new Stripe(Deno.env.get('STRIPE_SECRET_KEY') || '', {
   apiVersion: '2023-10-16',
 });
 
@@ -12,16 +13,16 @@ interface PaymentRequest {
   userId: string;
 }
 
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+};
+
 serve(async (req: Request) => {
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
-    return new Response('ok', {
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'POST',
-        'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-      },
-    });
+    return new Response('ok', { headers: corsHeaders });
   }
 
   try {
@@ -68,8 +69,8 @@ serve(async (req: Request) => {
       JSON.stringify(response),
       {
         headers: {
+          ...corsHeaders,
           'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
         },
         status: 200,
       }
@@ -85,11 +86,10 @@ serve(async (req: Request) => {
       {
         status: 400,
         headers: {
+          ...corsHeaders,
           'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
         },
       }
     );
   }
 });
-	

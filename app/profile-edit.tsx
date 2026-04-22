@@ -1,139 +1,108 @@
-// app/profile/edit.tsx - FULL EDIT PROFILE IMPLEMENTATION
+// app/(tabs)/edit-profile.tsx
 import React, { useState, useEffect } from 'react';
 import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  TextInput,
-  TouchableOpacity,
-  Image,
-  Alert,
-  ActivityIndicator,
+  View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput,
+  Image, Alert, ActivityIndicator
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { useAuthStore } from '@/store/authStore';
-import { supabase } from '@/config/supabase';
-import { useRouter } from 'expo-router';
+import { supabase } from '@/config/supabase'; 
+import { router } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 
 export default function EditProfileScreen() {
-  const { userProfile, loadProfile } = useAuthStore();
-  const router = useRouter();
-
-  const [loading, setLoading] = useState(false);
-  const [uploading, setUploading] = useState(false);
+  const { userProfile, user } = useAuthStore();
  
+  const [loading, setLoading] = useState(false);
   const [displayName, setDisplayName] = useState('');
   const [username, setUsername] = useState('');
   const [bio, setBio] = useState('');
   const [avatarUrl, setAvatarUrl] = useState('');
-  const [businessEmail, setBusinessEmail] = useState('');
- 
+  const [isUsernameAvailable, setIsUsernameAvailable] = useState(true);
+  const [checkingUsername, setCheckingUsername] = useState(false);
+
   useEffect(() => {
     if (userProfile) {
       setDisplayName(userProfile.display_name || '');
       setUsername(userProfile.username || '');
       setBio(userProfile.bio || '');
       setAvatarUrl(userProfile.avatar_url || '');
-      setBusinessEmail(userProfile.business_email || '');
     }
   }, [userProfile]);
 
-  const pickImage = async () => {
-    try {
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsEditing: true,
-        aspect: [1, 1],
-        quality: 0.8,
-      });
+  const checkUsernameAvailability = async (newUsername: string) => {
+    if (newUsername === userProfile?.username) {
+      setIsUsernameAvailable(true);
+      return;
+    }
 
-      if (!result.canceled && result.assets[0]) {
-        await uploadImage(result.assets[0].uri);
-      }
+    if (newUsername.length < 3) {
+      setIsUsernameAvailable(false);
+      return;
+    }
+
+    setCheckingUsername(true);
+    try {
+      const { data, error } = await supabase
+        .from('users')
+        .select('id')
+        .eq('username', newUsername)
+        .single();
+
+      setIsUsernameAvailable(!data);
     } catch (error) {
-      console.error('Error picking image:', error);
-      Alert.alert('Error', 'Failed to pick image');
-    }
-  };
-
-  const uploadImage = async (uri: string) => {
-    try {
-      setUploading(true);
-
-      // Convert to blob
-      const response = await fetch(uri);
-      const blob = await response.blob();
-     
-      // Create unique filename
-      const fileExt = uri.split('.').pop();
-      const fileName = `${userProfile?.id}-${Date.now()}.${fileExt}`;
-      const filePath = `avatars/${fileName}`;
-
-      // Upload to Supabase Storage
-      const { error: uploadError } = await supabase.storage
-        .from('media')
-        .upload(filePath, blob);
-
-      if (uploadError) throw uploadError;
-
-      // Get public URL
-      const { data: { publicUrl } } = supabase.storage
-        .from('media')
-        .getPublicUrl(filePath);
-
-      setAvatarUrl(publicUrl);
-      Alert.alert('Success', 'Profile picture updated!');
-    } catch (error: any) {
-      console.error('Upload error:', error);
-      Alert.alert('Upload Failed', error.message || 'Could not upload image');
+      setIsUsernameAvailable(true);
     } finally {
-      setUploading(false);
+      setCheckingUsername(false);
     }
   };
 
-  const validateUsername = (text: string) => {
-    // Only allow alphanumeric and underscores
-    return text.toLowerCase().replace(/[^a-z0-9_]/g, '');
+  const handleUsernameChange = (text: string) => {
+    const sanitized = text.toLowerCase().replace(/[^a-z0-9_]/g, '');
+    setUsername(sanitized);
+    checkUsernameAvailability(sanitized);
+  };
+
+  const handlePickImage = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+   
+    if (status !== 'granted') {
+      Alert.alert('Permission needed', 'Please grant photo library access');
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.8,
+    });
+
+    if (!result.canceled) {
+      setAvatarUrl(result.assets[0].uri);
+    }
   };
 
   const handleSave = async () => {
+    if (!user?.id) return;
+
     if (!displayName.trim()) {
       Alert.alert('Error', 'Display name is required');
       return;
     }
 
-    if (!username.trim()) {
-      Alert.alert('Error', 'Username is required');
-      return;
-    }
-
-    if (username.length < 3) {
+    if (!username.trim() || username.length < 3) {
       Alert.alert('Error', 'Username must be at least 3 characters');
       return;
     }
 
+    if (!isUsernameAvailable) {
+      Alert.alert('Error', 'Username is already taken');
+      return;
+    }
+
     setLoading(true);
-
     try {
-      // Check if username is taken (if changed)
-      if (username !== userProfile?.username) {
-        const { data: existingUser } = await supabase
-          .from('users')
-          .select('id')
-          .eq('username', username)
-          .neq('id', userProfile?.id)
-          .maybeSingle();
-
-        if (existingUser) {
-          Alert.alert('Error', 'Username is already taken');
-          setLoading(false);
-          return;
-        }
-      }
-
-      // Update profile
       const { error } = await supabase
         .from('users')
         .update({
@@ -141,194 +110,118 @@ export default function EditProfileScreen() {
           username: username.trim(),
           bio: bio.trim(),
           avatar_url: avatarUrl,
-          business_email: businessEmail.trim() || null,
         })
-        .eq('id', userProfile?.id);
+        .eq('id', user.id);
 
       if (error) throw error;
 
-      // Reload profile
-      await loadProfile();
-
       Alert.alert('Success', 'Profile updated successfully!', [
-        {
-          text: 'OK',
-          onPress: () => router.back(),
-        },
+        { text: 'OK', onPress: () => router.back() }
       ]);
     } catch (error: any) {
-      console.error('Save error:', error);
-      Alert.alert('Error', error.message || 'Failed to update profile');
+      console.error('Update error:', error);
+      Alert.alert('Error', 'Failed to update profile');
     } finally {
       setLoading(false);
     }
   };
 
-  if (!userProfile) {
-    return (
-      <View style={styles.container}>
-        <ActivityIndicator size="large" color="#00ff88" />
-      </View>
-    );
-  }
-
   return (
-    <View style={styles.container}>
-      <View style={styles.header}>
+    <View style={s.container}>
+      <View style={s.header}>
         <TouchableOpacity onPress={() => router.back()}>
           <Feather name="x" size={24} color="#fff" />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Edit Profile</Text>
+        <Text style={s.headerTitle}>Edit Profile</Text>
         <TouchableOpacity onPress={handleSave} disabled={loading}>
           {loading ? (
             <ActivityIndicator size="small" color="#00ff88" />
           ) : (
-            <Text style={styles.saveButton}>Save</Text>
+            <Text style={s.saveBtn}>Save</Text>
           )}
         </TouchableOpacity>
       </View>
 
-      <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
-        {/* Avatar Section */}
-        <View style={styles.avatarSection}>
-          <TouchableOpacity onPress={pickImage} disabled={uploading}>
+      <ScrollView showsVerticalScrollIndicator={false}>
+        <View style={s.content}>
+          <TouchableOpacity style={s.avatarContainer} onPress={handlePickImage}>
             {avatarUrl ? (
-              <Image source={{ uri: avatarUrl }} style={styles.avatar} />
+              <Image source={{ uri: avatarUrl }} style={s.avatar} />
             ) : (
-              <View style={[styles.avatar, styles.avatarPlaceholder]}>
+              <View style={[s.avatar, s.avatarPlaceholder]}>
                 <Feather name="user" size={40} color="#00ff88" />
               </View>
             )}
-            {uploading && (
-              <View style={styles.uploadingOverlay}>
-                <ActivityIndicator size="small" color="#fff" />
-              </View>
-            )}
+            <View style={s.avatarBadge}>
+              <Feather name="camera" size={16} color="#fff" />
+            </View>
           </TouchableOpacity>
-          <TouchableOpacity onPress={pickImage} disabled={uploading}>
-            <Text style={styles.changePhotoText}>
-              {uploading ? 'Uploading...' : 'Change Profile Photo'}
-            </Text>
-          </TouchableOpacity>
-        </View>
+          <Text style={s.avatarHint}>Tap to change photo</Text>
 
-        {/* Form Fields */}
-        <View style={styles.form}>
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>Display Name</Text>
+          <View style={s.section}>
+            <Text style={s.label}>Display Name *</Text>
             <TextInput
-              style={styles.input}
+              style={s.input}
               value={displayName}
               onChangeText={setDisplayName}
-              placeholder="Your display name"
+              placeholder="Enter your display name"
               placeholderTextColor="#666"
               maxLength={50}
             />
-            <Text style={styles.charCount}>{displayName.length}/50</Text>
+            <Text style={s.hint}>This is how your name appears on your profile</Text>
           </View>
 
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>Username</Text>
-            <TextInput
-              style={styles.input}
-              value={username}
-              onChangeText={(text) => setUsername(validateUsername(text))}
-              placeholder="username"
-              placeholderTextColor="#666"
-              autoCapitalize="none"
-              maxLength={20}
-            />
-            <Text style={styles.helperText}>
-              Only letters, numbers, and underscores
+          <View style={s.section}>
+            <Text style={s.label}>Username *</Text>
+            <View style={s.usernameContainer}>
+              <Text style={s.usernamePrefix}>@</Text>
+              <TextInput
+                style={s.usernameInput}
+                value={username}
+                onChangeText={handleUsernameChange}
+                placeholder="username"
+                placeholderTextColor="#666"
+                autoCapitalize="none"
+                maxLength={30}
+              />
+              {checkingUsername && (
+                <ActivityIndicator size="small" color="#00ff88" />
+              )}
+              {!checkingUsername && username.length >= 3 && (
+                <Feather
+                  name={isUsernameAvailable ? "check-circle" : "x-circle"}
+                  size={20}
+                  color={isUsernameAvailable ? "#00ff88" : "#ff4444"}
+                />
+              )}
+            </View>
+            <Text style={[s.hint, !isUsernameAvailable && s.hintError]}>
+              {!isUsernameAvailable
+                ? 'Username is already taken'
+                : 'Lowercase letters, numbers, and underscores only'}
             </Text>
           </View>
 
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>Bio</Text>
+          <View style={s.section}>
+            <Text style={s.label}>Bio</Text>
             <TextInput
-              style={[styles.input, styles.textArea]}
+              style={[s.input, s.bioInput]}
               value={bio}
               onChangeText={setBio}
               placeholder="Tell us about yourself..."
               placeholderTextColor="#666"
               multiline
-              numberOfLines={4}
               maxLength={150}
+              textAlignVertical="top"
             />
-            <Text style={styles.charCount}>{bio.length}/150</Text>
+            <Text style={s.charCount}>{bio.length}/150</Text>
           </View>
 
-          {/* Business Email (for Star creators and above) */}
-          {userProfile.creator_tier &&
-           ['star', 'elite', 'elite_plus', 'legend'].includes(userProfile.creator_tier) && (
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Business Email</Text>
-              <Text style={styles.helperText}>
-                For brand partnerships and collaborations
-              </Text>
-              <TextInput
-                style={styles.input}
-                value={businessEmail}
-                onChangeText={setBusinessEmail}
-                placeholder="business@example.com"
-                placeholderTextColor="#666"
-                keyboardType="email-address"
-                autoCapitalize="none"
-              />
-            </View>
-          )}
-
-          {/* Account Info */}
-          <View style={styles.infoSection}>
-            <Text style={styles.infoTitle}>Account Information</Text>
-           
-            <View style={styles.infoRow}>
-              <Text style={styles.infoLabel}>Account Created</Text>
-              <Text style={styles.infoValue}>
-                {new Date(userProfile.created_at ?? '').toLocaleDateString()}
-              </Text>
-            </View>
-
-            {userProfile.creator_tier && userProfile.creator_tier !== 'none' && (
-              <View style={styles.infoRow}>
-                <Text style={styles.infoLabel}>Creator Tier</Text>
-                <Text style={[styles.infoValue, { color: '#00ff88' }]}>
-                  {userProfile.creator_tier.replace('_', ' ').toUpperCase()}
-                </Text>
-              </View>
-            )}
-
-            <View style={styles.infoRow}>
-              <Text style={styles.infoLabel}>User ID</Text>
-              <Text style={[styles.infoValue, { fontSize: 10 }]}>
-                {userProfile.id}
-              </Text>
-            </View>
-          </View>
-
-          {/* Danger Zone */}
-          <View style={styles.dangerZone}>
-            <Text style={styles.dangerTitle}>Danger Zone</Text>
-            <TouchableOpacity
-              style={styles.dangerButton}
-              onPress={() => {
-                Alert.alert(
-                  'Delete Account',
-                  'This action cannot be undone. All your posts and data will be permanently deleted.',
-                  [
-                    { text: 'Cancel', style: 'cancel' },
-                    {
-                      text: 'Delete',
-                      style: 'destructive',
-                      onPress: () => Alert.alert('Coming Soon', 'Account deletion will be available soon'),
-                    },
-                  ]
-                );
-              }}
-            >
-              <Feather name="trash-2" size={18} color="#ff4444" />
-              <Text style={styles.dangerButtonText}>Delete Account</Text>
-            </TouchableOpacity>
+          <View style={s.infoBox}>
+            <Feather name="info" size={20} color="#00ff88" />
+            <Text style={s.infoText}>
+              Your profile information is visible to all users. Make sure you're comfortable sharing this information publicly.
+            </Text>
           </View>
         </View>
       </ScrollView>
@@ -336,7 +229,7 @@ export default function EditProfileScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const s = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#000',
@@ -356,51 +249,51 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: '#fff',
   },
-  saveButton: {
+  saveBtn: {
     fontSize: 16,
     fontWeight: '600',
     color: '#00ff88',
   },
   content: {
-    flex: 1,
+    padding: 20,
   },
-  avatarSection: {
-    alignItems: 'center',
-    paddingVertical: 32,
+  avatarContainer: {
+    alignSelf: 'center',
+    marginBottom: 8,
+    position: 'relative',
   },
   avatar: {
     width: 100,
     height: 100,
     borderRadius: 50,
-    backgroundColor: '#1a1a1a',
-    borderWidth: 2,
+    borderWidth: 3,
     borderColor: '#00ff88',
   },
   avatarPlaceholder: {
+    backgroundColor: '#1a1a1a',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  uploadingOverlay: {
+  avatarBadge: {
     position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
     bottom: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    borderRadius: 50,
+    right: 0,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#00ff88',
     justifyContent: 'center',
     alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#000',
   },
-  changePhotoText: {
-    marginTop: 12,
+  avatarHint: {
     fontSize: 14,
-    color: '#00ff88',
-    fontWeight: '600',
+    color: '#999',
+    textAlign: 'center',
+    marginBottom: 32,
   },
-  form: {
-    paddingHorizontal: 20,
-  },
-  inputGroup: {
+  section: {
     marginBottom: 24,
   },
   label: {
@@ -411,86 +304,68 @@ const styles = StyleSheet.create({
   },
   input: {
     backgroundColor: '#1a1a1a',
-    borderRadius: 8,
+    borderRadius: 12,
     padding: 16,
     fontSize: 16,
     color: '#fff',
     borderWidth: 1,
     borderColor: '#333',
   },
-  textArea: {
+  usernameContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1a1a1a',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    borderWidth: 1,
+    borderColor: '#333',
+  },
+  usernamePrefix: {
+    fontSize: 16,
+    color: '#00ff88',
+    fontWeight: '600',
+    marginRight: 4,
+  },
+  usernameInput: {
+    flex: 1,
+    padding: 16,
+    paddingLeft: 0,
+    fontSize: 16,
+    color: '#fff',
+  },
+  hint: {
+    fontSize: 12,
+    color: '#666',
+    marginTop: 6,
+  },
+  hintError: {
+    color: '#ff4444',
+  },
+  bioInput: {
     height: 100,
-    textAlignVertical: 'top',
+    paddingTop: 16,
   },
   charCount: {
     fontSize: 12,
     color: '#666',
     textAlign: 'right',
-    marginTop: 4,
+    marginTop: 6,
   },
-  helperText: {
-    fontSize: 12,
-    color: '#666',
-    marginTop: 4,
-  },
-  infoSection: {
-    backgroundColor: '#0a0a0a',
+  infoBox: {
+    flexDirection: 'row',
+    backgroundColor: 'rgba(0,255,136,0.05)',
     borderRadius: 12,
     padding: 16,
-    marginTop: 24,
     borderWidth: 1,
-    borderColor: '#1a1a1a',
+    borderColor: '#00ff88',
+    gap: 12,
+    marginTop: 8,
   },
-  infoTitle: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#fff',
-    marginBottom: 12,
-  },
-  infoRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 8,
-  },
-  infoLabel: {
-    fontSize: 14,
+  infoText: {
+    flex: 1,
+    fontSize: 13,
     color: '#999',
-  },
-  infoValue: {
-    fontSize: 14,
-    color: '#fff',
-    fontWeight: '500',
-  },
-  dangerZone: {
-    marginTop: 32,
-    marginBottom: 40,
-    padding: 16,
-    backgroundColor: '#1a0000',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#ff4444',
-  },
-  dangerTitle: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#ff4444',
-    marginBottom: 12,
-  },
-  dangerButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    padding: 12,
-    backgroundColor: '#000',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#ff4444',
-  },
-  dangerButtonText: {
-    fontSize: 14,
-    color: '#ff4444',
-    fontWeight: '600',
+    lineHeight: 18,
   },
 }); 
 	

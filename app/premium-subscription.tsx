@@ -241,7 +241,7 @@ export default function PremiumSubscriptionScreen() {
           </View>
 
           <View style={styles.featureCard}>
-            <Feather name="palette" size={24} color="#9b59b6" />
+            <Feather name="layout" size={24} color="#9b59b6" />
             <View style={styles.featureContent}>
               <Text style={styles.featureTitle}>Custom Themes</Text>
               <Text style={styles.featureDesc}>Personalize your profile</Text>

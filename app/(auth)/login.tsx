@@ -1,4 +1,4 @@
-// app/(auth)/login.tsx
+// app/(auth)/login.tsx - IMPROVED VERSION
 import React, { useState } from 'react';
 import {
   View,
@@ -27,45 +27,61 @@ export default function LoginScreen() {
   const router = useRouter();
 
   const handleLogin = async () => {
-    if (!email.trim()) {
-      Alert.alert('Validation Error', 'Please enter your email');
+    // Validation
+    const trimmedEmail = email.trim().toLowerCase();
+    
+    if (!trimmedEmail) {
+      Alert.alert('Error', 'Please enter your email');
       return;
     }
 
     if (!password) {
-      Alert.alert('Validation Error', 'Please enter your password');
+      Alert.alert('Error', 'Please enter your password');
+      return;
+    }
+
+    // Email format validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(trimmedEmail)) {
+      Alert.alert('Error', 'Please enter a valid email address');
       return;
     }
 
     setLoading(true);
 
     try {
-      console.log('🔐 Attempting login...');
-     
-      await login(email.trim().toLowerCase(), password);
-     
-      console.log('✅ Login successful, navigating to home...');
-     
-      await new Promise(resolve => setTimeout(resolve, 500));
-     
+      console.log('🔐 Logging in:', trimmedEmail);
+      
+      await login(trimmedEmail, password);
+      
+      console.log('✅ Login successful');
+      
+      // Small delay for smooth transition
+      await new Promise(resolve => setTimeout(resolve, 300));
+      
+      // Navigate to home
       router.replace('/(tabs)');
-     
+      
     } catch (error: any) {
       console.error('❌ Login error:', error);
-     
-      let errorMessage = 'Login failed. Please try again.';
-     
-      if (error.message.includes('Invalid login credentials')) {
-        errorMessage = 'Invalid email or password. Please check and try again.';
-      } else if (error.message.includes('Email not confirmed')) {
-        errorMessage = 'Please confirm your email before logging in.';
-      } else if (error.message.includes('Profile not found')) {
-        errorMessage = 'Your account profile is missing. Please contact support or create a new account.';
+      
+      let errorTitle = 'Login Failed';
+      let errorMessage = 'Unable to log in. Please try again.';
+      
+      // Handle specific error cases
+      if (error.message?.toLowerCase().includes('invalid login credentials')) {
+        errorMessage = 'Incorrect email or password. Please check and try again.';
+      } else if (error.message?.toLowerCase().includes('email not confirmed')) {
+        errorTitle = 'Email Not Confirmed';
+        errorMessage = 'Please check your email and confirm your account before logging in.';
+      } else if (error.message?.toLowerCase().includes('network')) {
+        errorTitle = 'Connection Error';
+        errorMessage = 'Please check your internet connection and try again.';
       } else if (error.message) {
         errorMessage = error.message;
       }
 
-      Alert.alert('Login Failed', errorMessage);
+      Alert.alert(errorTitle, errorMessage);
     } finally {
       setLoading(false);
     }
@@ -78,7 +94,7 @@ export default function LoginScreen() {
     >
       <LinearGradient colors={['#000000', '#1a1a1a']} style={styles.header}>
         <Text style={styles.headerTitle}>Welcome Back</Text>
-        <Text style={styles.headerSubtitle}>Log in to continue to Kinsta</Text>
+        <Text style={styles.headerSubtitle}>Log in to continue to </Text>
       </LinearGradient>
 
       <ScrollView
@@ -89,7 +105,10 @@ export default function LoginScreen() {
         <View style={styles.form}>
           <View style={styles.inputContainer}>
             <Text style={styles.label}>Email</Text>
-            <View style={styles.inputWrapper}>
+            <View style={[
+              styles.inputWrapper,
+              loading && styles.inputDisabled
+            ]}>
               <Ionicons name="mail-outline" size={20} color="#00ff00" style={styles.inputIcon} />
               <TextInput
                 style={styles.input}
@@ -101,13 +120,17 @@ export default function LoginScreen() {
                 autoCapitalize="none"
                 autoCorrect={false}
                 editable={!loading}
+                returnKeyType="next"
               />
             </View>
           </View>
 
           <View style={styles.inputContainer}>
             <Text style={styles.label}>Password</Text>
-            <View style={styles.inputWrapper}>
+            <View style={[
+              styles.inputWrapper,
+              loading && styles.inputDisabled
+            ]}>
               <Ionicons name="lock-closed-outline" size={20} color="#00ff00" style={styles.inputIcon} />
               <TextInput
                 style={styles.input}
@@ -119,6 +142,8 @@ export default function LoginScreen() {
                 autoCapitalize="none"
                 autoCorrect={false}
                 editable={!loading}
+                returnKeyType="go"
+                onSubmitEditing={handleLogin}
               />
               <TouchableOpacity
                 onPress={() => setShowPassword(!showPassword)}
@@ -136,7 +161,10 @@ export default function LoginScreen() {
         </View>
 
         <TouchableOpacity
-          style={styles.loginButton}
+          style={[
+            styles.loginButton,
+            loading && styles.loginButtonDisabled
+          ]}
           onPress={handleLogin}
           disabled={loading}
           activeOpacity={0.8}
@@ -158,8 +186,16 @@ export default function LoginScreen() {
 
         <View style={styles.footer}>
           <Text style={styles.footerText}>Don't have an account? </Text>
-          <TouchableOpacity onPress={() => router.push('/(auth)/signup')} disabled={loading}>
-            <Text style={styles.signupLink}>Sign Up</Text>
+          <TouchableOpacity 
+            onPress={() => router.push('/(auth)/signup')} 
+            disabled={loading}
+          >
+            <Text style={[
+              styles.signupLink,
+              loading && styles.linkDisabled
+            ]}>
+              Sign Up
+            </Text>
           </TouchableOpacity>
         </View>
       </ScrollView>
@@ -212,6 +248,9 @@ const styles = StyleSheet.create({
     borderColor: '#333',
     paddingHorizontal: 16,
   },
+  inputDisabled: {
+    opacity: 0.6,
+  },
   inputIcon: {
     marginRight: 12,
   },
@@ -228,6 +267,9 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     overflow: 'hidden',
     marginBottom: 24,
+  },
+  loginButtonDisabled: {
+    opacity: 0.7,
   },
   loginButtonGradient: {
     paddingVertical: 16,
@@ -254,5 +296,8 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#00ff00',
     fontWeight: '600',
+  },
+  linkDisabled: {
+    opacity: 0.5,
   },
 });

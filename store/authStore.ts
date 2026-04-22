@@ -1,4 +1,4 @@
-// store/authStore.ts - COMPLETE FIXED VERSION
+// store/authStore.ts - COMPLETE FIXED VERSION WITH SIGNOUT
 import { create } from 'zustand';
 import { supabase } from '../config/supabase';
 import { User } from '@supabase/supabase-js';
@@ -10,6 +10,11 @@ export interface UserProfile {
   display_name: string;
   bio: string;
   coins: number;
+  photo_url?: string;
+  points: number;
+  level: number;
+  badges_count: number;
+  streak_days: number;
   followers: number;
   following: number;
   avatar_url?: string;
@@ -27,18 +32,20 @@ export interface UserProfile {
   business_email?: string;
   creator_tier?: string;
   is_premium?: boolean;
-  
+  referral_code: boolean;
 }
 
 interface AuthState {
   user: User | null;
   userProfile: UserProfile | null;
   loading: boolean;
+  isLoading?: boolean;
   initialized: boolean;
   initAuth: () => Promise<void>;
   login: (email: string, password: string) => Promise<void>;
   signup: (email: string, password: string, username: string, displayName: string) => Promise<void>;
   logout: () => Promise<void>;
+  signOut: () => Promise<void>; // ADDED THIS
   updateProfile: (updates: Partial<UserProfile>) => Promise<void>;
   loadUserProfile: (userId: string) => Promise<void>;
   loadProfile: () => Promise<void>;
@@ -190,15 +197,19 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         return;
       }
 
-      // Create profile
+      // Create profile with gamification fields
       const profileData = {
         id: authData.user.id,
         email: email.trim().toLowerCase(),
         username: username.toLowerCase(),
         display_name: displayName,
         bio: '',
-        photo_url: null,
+        avatar_url: null,
         coins: 100,
+        points: 0,
+        level: 1,
+        badges_count: 0,
+        streak_days: 0,
         followers: 0,
         following: [],
       };
@@ -232,6 +243,22 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       set({ user: null, userProfile: null });
     } catch (error: any) {
       throw new Error(error.message || 'Logout failed');
+    } finally {
+      set({ loading: false });
+    }
+  },
+
+  // ADDED SIGNOUT FUNCTION (same as logout)
+  signOut: async () => {
+    try {
+      set({ loading: true });
+      console.log('🚪 Signing out...');
+      await supabase.auth.signOut();
+      set({ user: null, userProfile: null });
+      console.log('✅ Signed out successfully');
+    } catch (error: any) {
+      console.error('Sign out error:', error);
+      throw new Error(error.message || 'Sign out failed');
     } finally {
       set({ loading: false });
     }
@@ -294,6 +321,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
       console.log('✅ Profile loaded:', data.username);
       console.log('💎 Current coins:', data.coins);
+      console.log('⭐ Current points:', data.points || 0);
+      console.log('🎯 Current level:', data.level || 1);
       set({ userProfile: data });
     } catch (error) {
       console.error('Load profile error:', error);

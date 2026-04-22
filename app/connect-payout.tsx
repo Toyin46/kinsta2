@@ -1,124 +1,128 @@
-// app/connect-payout.tsx - STRIPE ONLY VERSION
+// app/connect-accounts.tsx
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Alert, ScrollView, ActivityIndicator, Linking } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  ScrollView,
+  ActivityIndicator,
+  Alert,
+} from 'react-native';
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
-import { useAuthStore } from '@/store/authStore';
-import { supabase } from '@/config/supabase';
 import { useRouter } from 'expo-router';
+import { useAuthStore } from '@/store/authStore';
+import { connectTikTok, disconnectTikTok, checkTikTokConnection } from '../lib/tiktok-oauth';
+import { connectInstagram, disconnectInstagram, checkInstagramConnection } from '../lib/instagram-oauth';
+import { connectYouTube, disconnectYouTube, checkYouTubeConnection } from '../lib/youtube-oauth';
 
-export default function ConnectPayoutScreen() {
-  const { user } = useAuthStore();
+export default function ConnectAccountsScreen() {
   const router = useRouter();
+  const { user } = useAuthStore();
+
   const [loading, setLoading] = useState(true);
-  const [stripeConnected, setStripeConnected] = useState(false);
-  const [stripeAccountId, setStripeAccountId] = useState('');
+  const [connecting, setConnecting] = useState<string | null>(null);
+
+  const [tiktokConnected, setTiktokConnected] = useState(false);
+  const [instagramConnected, setInstagramConnected] = useState(false);
+  const [youtubeConnected, setYoutubeConnected] = useState(false);
 
   useEffect(() => {
-    loadPayoutMethod();
-  }, []);
+    checkConnections();
+  }, [user?.id]);
 
-  const loadPayoutMethod = async () => {
+  const checkConnections = async () => {
     if (!user?.id) return;
-    
+
     try {
-      const { data } = await supabase
-        .from('users')
-        .select('stripe_account_id')
-        .eq('id', user.id)
-        .single();
-      
-      if (data) {
-        setStripeAccountId(data.stripe_account_id || '');
-        setStripeConnected(!!data.stripe_account_id);
-      }
+      const [tiktok, instagram, youtube] = await Promise.all([
+        checkTikTokConnection(user.id),
+        checkInstagramConnection(user.id),
+        checkYouTubeConnection(user.id),
+      ]);
+
+      setTiktokConnected(tiktok.connected);
+      setInstagramConnected(instagram.connected);
+      setYoutubeConnected(youtube.connected);
     } catch (error) {
-      console.error('Error loading payout method:', error);
+      console.error('Error checking connections:', error);
     } finally {
       setLoading(false);
     }
   };
 
-  const connectStripe = async () => {
-    Alert.alert(
-      '🔵 Connect Stripe',
-      'You will be redirected to Stripe to connect your bank account. This is secure and handled by Stripe.\n\nStripe supports bank accounts worldwide including Nigeria.',
-      [
-        {
-          text: 'Continue',
-          onPress: async () => {
-            try {
-              // In production, call your backend API
-              // For now, show how it will work:
-              Alert.alert(
-                'Stripe Connect',
-                'In production:\n\n1. You\'ll be redirected to Stripe\n2. Connect your bank account\n3. Verify your identity\n4. Start receiving payouts!\n\nFor testing, we\'ll simulate this is connected.',
-                [
-                  {
-                    text: 'Simulate Connection',
-                    onPress: async () => {
-                      // Simulate connection for testing
-                      const testAccountId = 'acct_test_' + Date.now();
-                      await supabase
-                        .from('users')
-                        .update({ stripe_account_id: testAccountId })
-                        .eq('id', user?.id);
-                      
-                      setStripeAccountId(testAccountId);
-                      setStripeConnected(true);
-                      
-                      Alert.alert('✅ Connected', 'Stripe account connected successfully!');
-                    }
-                  },
-                  { text: 'Cancel', style: 'cancel' }
-                ]
-              );
-            } catch (error) {
-              Alert.alert('Error', 'Failed to connect Stripe');
-            }
-          }
-        },
-        { text: 'Cancel', style: 'cancel' }
-      ]
-    );
+  const handleConnect = async (platform: 'tiktok' | 'instagram' | 'youtube') => {
+    if (!user?.id) return;
+
+    setConnecting(platform);
+    try {
+      let result;
+     
+      if (platform === 'tiktok') {
+        result = await connectTikTok(user.id);
+        if (result.success) {
+          setTiktokConnected(true);
+          Alert.alert('✅ Connected', 'TikTok account connected successfully!');
+        }
+      } else if (platform === 'instagram') {
+        result = await connectInstagram(user.id);
+        if (result.success) {
+          setInstagramConnected(true);
+          Alert.alert('✅ Connected', 'Instagram account connected successfully!');
+        }
+      } else if (platform === 'youtube') {
+        result = await connectYouTube(user.id);
+        if (result.success) {
+          setYoutubeConnected(true);
+          Alert.alert('✅ Connected', 'YouTube account connected successfully!');
+        }
+      }
+    } catch (error: any) {
+      Alert.alert('Connection Failed', error.message || 'Could not connect account');
+    } finally {
+      setConnecting(null);
+    }
   };
 
-  const disconnectStripe = async () => {
+  const handleDisconnect = async (platform: 'tiktok' | 'instagram' | 'youtube') => {
+    if (!user?.id) return;
+
     Alert.alert(
-      'Disconnect Stripe?',
-      'Are you sure you want to disconnect your Stripe account?',
+      'Disconnect Account',
+      `Are you sure you want to disconnect your ${platform} account?`,
       [
+        { text: 'Cancel', style: 'cancel' },
         {
           text: 'Disconnect',
           style: 'destructive',
           onPress: async () => {
             try {
-              await supabase
-                .from('users')
-                .update({ stripe_account_id: null })
-                .eq('id', user?.id);
-              
-              setStripeAccountId('');
-              setStripeConnected(false);
-              
-              Alert.alert('Disconnected', 'Stripe account disconnected');
+              if (platform === 'tiktok') {
+                await disconnectTikTok(user.id);
+                setTiktokConnected(false);
+              } else if (platform === 'instagram') {
+                await disconnectInstagram(user.id);
+                setInstagramConnected(false);
+              } else if (platform === 'youtube') {
+                await disconnectYouTube(user.id);
+                setYoutubeConnected(false);
+              }
+              Alert.alert('Disconnected', `${platform} account disconnected`);
             } catch (error) {
-              Alert.alert('Error', 'Could not disconnect');
+              Alert.alert('Error', 'Failed to disconnect account');
             }
           }
-        },
-        { text: 'Cancel', style: 'cancel' }
+        }
       ]
     );
-  };
-
-  const openStripeInfo = () => {
-    Linking.openURL('https://stripe.com/connect');
   };
 
   if (loading) {
     return (
       <View style={s.container}>
-        <ActivityIndicator size="large" color="#00ff88" />
+        <View style={s.centerContainer}>
+          <ActivityIndicator size="large" color="#00ff88" />
+        </View>
       </View>
     );
   }
@@ -129,78 +133,166 @@ export default function ConnectPayoutScreen() {
         <TouchableOpacity onPress={() => router.back()}>
           <Feather name="arrow-left" size={24} color="#fff" />
         </TouchableOpacity>
-        <Text style={s.headerTitle}>Payout Method</Text>
+        <Text style={s.headerTitle}>Connect Accounts</Text>
         <View style={{ width: 24 }} />
       </View>
 
-      <ScrollView>
+      <ScrollView showsVerticalScrollIndicator={false}>
         <View style={s.content}>
-          <Text style={s.subtitle}>
-            Connect Stripe to receive your earnings directly to your bank account
+          <Text style={s.description}>
+            Connect your social media accounts to cross-post content and grow your audience
           </Text>
 
-          {/* Stripe Card */}
-          <View style={s.card}>
-            <View style={s.cardHeader}>
-              <View style={s.cardIcon}>
-                <MaterialCommunityIcons name="stripe" size={40} color="#635bff" />
+          {/* TikTok */}
+          <View style={s.accountCard}>
+            <View style={s.accountHeader}>
+              <View style={s.accountIcon}>
+                <MaterialCommunityIcons name="music-note" size={32} color="#000" />
               </View>
-              <View style={s.cardInfo}>
-                <Text style={s.cardTitle}>Stripe</Text>
-                <Text style={s.cardDesc}>
-                  {stripeConnected ? 'Connected ✓' : 'Direct bank transfers worldwide'}
+              <View style={s.accountInfo}>
+                <Text style={s.accountName}>TikTok</Text>
+                <Text style={s.accountDesc}>
+                  {tiktokConnected ? 'Connected ✓' : 'Connect your TikTok account'}
                 </Text>
               </View>
-              {stripeConnected && (
+              {tiktokConnected && (
                 <Feather name="check-circle" size={24} color="#00ff88" />
               )}
             </View>
 
-            {stripeConnected ? (
-              <View style={s.connectedInfo}>
-                <Text style={s.connectedText}>
-                  ✅ Bank account connected via Stripe
-                </Text>
-                <Text style={s.connectedSubtext}>
-                  You can now withdraw your earnings
-                </Text>
-                <TouchableOpacity style={s.disconnectBtn} onPress={disconnectStripe}>
-                  <Text style={s.disconnectText}>Disconnect</Text>
-                </TouchableOpacity>
-              </View>
-            ) : (
-              <TouchableOpacity style={s.connectBtn} onPress={connectStripe}>
-                <Text style={s.connectText}>Connect Stripe</Text>
-              </TouchableOpacity>
-            )}
-
             <View style={s.features}>
-              <Text style={s.featuresTitle}>Why Stripe?</Text>
               <View style={s.feature}>
-                <Feather name="check" size={16} color="#00ff88" />
-                <Text style={s.featureText}>Works in Nigeria & 45+ countries</Text>
+                <Feather name="check" size={14} color="#00ff88" />
+                <Text style={s.featureText}>Cross-post your videos</Text>
               </View>
               <View style={s.feature}>
-                <Feather name="check" size={16} color="#00ff88" />
-                <Text style={s.featureText}>Fast payouts (24-48 hours)</Text>
+                <Feather name="check" size={14} color="#00ff88" />
+                <Text style={s.featureText}>Import your existing content</Text>
               </View>
               <View style={s.feature}>
-                <Feather name="check" size={16} color="#00ff88" />
-                <Text style={s.featureText}>Secure & verified by millions</Text>
-              </View>
-              <View style={s.feature}>
-                <Feather name="check" size={16} color="#00ff88" />
-                <Text style={s.featureText}>Direct to your bank account</Text>
-              </View>
-              <View style={s.feature}>
-                <Feather name="check" size={16} color="#00ff88" />
-                <Text style={s.featureText}>No hidden fees</Text>
+                <Feather name="check" size={14} color="#00ff88" />
+                <Text style={s.featureText}>Sync followers</Text>
               </View>
             </View>
 
-            <TouchableOpacity style={s.learnMore} onPress={openStripeInfo}>
-              <Text style={s.learnMoreText}>Learn more about Stripe Connect</Text>
-              <Feather name="external-link" size={16} color="#635bff" />
+            <TouchableOpacity
+              style={[
+                s.connectButton,
+                tiktokConnected && s.disconnectButton,
+                connecting === 'tiktok' && s.connectingButton
+              ]}
+              onPress={() => tiktokConnected ? handleDisconnect('tiktok') : handleConnect('tiktok')}
+              disabled={connecting !== null}
+            >
+              {connecting === 'tiktok' ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={[s.connectButtonText, tiktokConnected && s.disconnectButtonText]}>
+                  {tiktokConnected ? 'Disconnect' : 'Connect TikTok'}
+                </Text>
+              )}
+            </TouchableOpacity>
+          </View>
+
+          {/* Instagram */}
+          <View style={s.accountCard}>
+            <View style={s.accountHeader}>
+              <View style={[s.accountIcon, { backgroundColor: '#E4405F' }]}>
+                <MaterialCommunityIcons name="instagram" size={32} color="#fff" />
+              </View>
+              <View style={s.accountInfo}>
+                <Text style={s.accountName}>Instagram</Text>
+                <Text style={s.accountDesc}>
+                  {instagramConnected ? 'Connected ✓' : 'Connect your Instagram account'}
+                </Text>
+              </View>
+              {instagramConnected && (
+                <Feather name="check-circle" size={24} color="#00ff88" />
+              )}
+            </View>
+
+            <View style={s.features}>
+              <View style={s.feature}>
+                <Feather name="check" size={14} color="#00ff88" />
+                <Text style={s.featureText}>Share to Instagram Reels</Text>
+              </View>
+              <View style={s.feature}>
+                <Feather name="check" size={14} color="#00ff88" />
+                <Text style={s.featureText}>Import your photos & videos</Text>
+              </View>
+              <View style={s.feature}>
+                <Feather name="check" size={14} color="#00ff88" />
+                <Text style={s.featureText}>Sync followers</Text>
+              </View>
+            </View>
+
+            <TouchableOpacity
+              style={[
+                s.connectButton,
+                instagramConnected && s.disconnectButton,
+                connecting === 'instagram' && s.connectingButton
+              ]}
+              onPress={() => instagramConnected ? handleDisconnect('instagram') : handleConnect('instagram')}
+              disabled={connecting !== null}
+            >
+              {connecting === 'instagram' ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={[s.connectButtonText, instagramConnected && s.disconnectButtonText]}>
+                  {instagramConnected ? 'Disconnect' : 'Connect Instagram'}
+                </Text>
+              )}
+            </TouchableOpacity>
+          </View>
+
+          {/* YouTube */}
+          <View style={s.accountCard}>
+            <View style={s.accountHeader}>
+              <View style={[s.accountIcon, { backgroundColor: '#FF0000' }]}>
+                <MaterialCommunityIcons name="youtube" size={32} color="#fff" />
+              </View>
+              <View style={s.accountInfo}>
+                <Text style={s.accountName}>YouTube</Text>
+                <Text style={s.accountDesc}>
+                  {youtubeConnected ? 'Connected ✓' : 'Connect your YouTube channel'}
+                </Text>
+              </View>
+              {youtubeConnected && (
+                <Feather name="check-circle" size={24} color="#00ff88" />
+              )}
+            </View>
+
+            <View style={s.features}>
+              <View style={s.feature}>
+                <Feather name="check" size={14} color="#00ff88" />
+                <Text style={s.featureText}>Upload to YouTube Shorts</Text>
+              </View>
+              <View style={s.feature}>
+                <Feather name="check" size={14} color="#00ff88" />
+                <Text style={s.featureText}>Import your videos</Text>
+              </View>
+              <View style={s.feature}>
+                <Feather name="check" size={14} color="#00ff88" />
+                <Text style={s.featureText}>Sync subscribers</Text>
+              </View>
+            </View>
+
+            <TouchableOpacity
+              style={[
+                s.connectButton,
+                youtubeConnected && s.disconnectButton,
+                connecting === 'youtube' && s.connectingButton
+              ]}
+              onPress={() => youtubeConnected ? handleDisconnect('youtube') : handleConnect('youtube')}
+              disabled={connecting !== null}
+            >
+              {connecting === 'youtube' ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={[s.connectButtonText, youtubeConnected && s.disconnectButtonText]}>
+                  {youtubeConnected ? 'Disconnect' : 'Connect YouTube'}
+                </Text>
+              )}
             </TouchableOpacity>
           </View>
 
@@ -209,10 +301,10 @@ export default function ConnectPayoutScreen() {
             <Feather name="info" size={20} color="#00aaff" />
             <View style={s.infoContent}>
               <Text style={s.infoText}>
-                Stripe is the world's leading payment processor, trusted by millions of businesses worldwide.
+                Your accounts are securely connected using OAuth 2.0. We never store your passwords.
               </Text>
               <Text style={[s.infoText, { marginTop: 8 }]}>
-                Your earnings are transferred directly to your bank account. You keep 70% of all earnings.
+                You can disconnect any account at any time.
               </Text>
             </View>
           </View>
@@ -224,30 +316,86 @@ export default function ConnectPayoutScreen() {
 
 const s = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000' },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, paddingTop: 60 },
+  centerContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 20,
+    paddingTop: 60,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1a1a1a',
+  },
   headerTitle: { fontSize: 20, fontWeight: 'bold', color: '#fff' },
   content: { padding: 20 },
-  subtitle: { fontSize: 14, color: '#999', marginBottom: 24, lineHeight: 20 },
-  card: { backgroundColor: '#0a0a0a', borderRadius: 16, padding: 20, marginBottom: 20, borderWidth: 2, borderColor: '#635bff' },
-  cardHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 20 },
-  cardIcon: { width: 64, height: 64, borderRadius: 32, backgroundColor: 'rgba(99,91,255,0.1)', alignItems: 'center', justifyContent: 'center', marginRight: 16 },
-  cardInfo: { flex: 1 },
-  cardTitle: { fontSize: 20, fontWeight: 'bold', color: '#fff', marginBottom: 4 },
-  cardDesc: { fontSize: 14, color: '#999' },
-  connectBtn: { backgroundColor: '#635bff', padding: 16, borderRadius: 12, alignItems: 'center', marginBottom: 20 },
-  connectText: { fontSize: 16, fontWeight: '600', color: '#fff' },
-  connectedInfo: { backgroundColor: 'rgba(0,255,136,0.1)', padding: 16, borderRadius: 12, marginBottom: 20, borderWidth: 1, borderColor: '#00ff88' },
-  connectedText: { fontSize: 16, fontWeight: '600', color: '#00ff88', marginBottom: 4 },
-  connectedSubtext: { fontSize: 13, color: '#999', marginBottom: 12 },
-  disconnectBtn: { alignSelf: 'flex-start', marginTop: 8 },
-  disconnectText: { fontSize: 14, color: '#ff4444', fontWeight: '600' },
+  description: {
+    fontSize: 14,
+    color: '#999',
+    marginBottom: 24,
+    lineHeight: 20,
+  },
+  accountCard: {
+    backgroundColor: '#0a0a0a',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#1a1a1a',
+  },
+  accountHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  accountIcon: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#fff',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 16,
+  },
+  accountInfo: { flex: 1 },
+  accountName: { fontSize: 18, fontWeight: 'bold', color: '#fff', marginBottom: 4 },
+  accountDesc: { fontSize: 13, color: '#999' },
   features: { marginBottom: 16 },
-  featuresTitle: { fontSize: 16, fontWeight: '600', color: '#fff', marginBottom: 12 },
-  feature: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
-  featureText: { fontSize: 14, color: '#999' },
-  learnMore: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 12, borderTopWidth: 1, borderTopColor: '#1a1a1a' },
-  learnMoreText: { fontSize: 14, color: '#635bff', fontWeight: '600' },
-  infoBox: { flexDirection: 'row', backgroundColor: 'rgba(0,170,255,0.1)', padding: 16, borderRadius: 12, gap: 12, borderWidth: 1, borderColor: 'rgba(0,170,255,0.2)' },
+  feature: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 8,
+  },
+  featureText: { fontSize: 13, color: '#ccc' },
+  connectButton: {
+    backgroundColor: '#00ff88',
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  connectButtonText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#000',
+  },
+  disconnectButton: {
+    backgroundColor: '#1a1a1a',
+    borderWidth: 1,
+    borderColor: '#ff4444',
+  },
+  disconnectButtonText: { color: '#ff4444' },
+  connectingButton: { opacity: 0.6 },
+  infoBox: {
+    flexDirection: 'row',
+    backgroundColor: 'rgba(0,170,255,0.1)',
+    padding: 16,
+    borderRadius: 12,
+    gap: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(0,170,255,0.2)',
+    marginTop: 8,
+  },
   infoContent: { flex: 1 },
   infoText: { fontSize: 13, color: '#00aaff', lineHeight: 18 },
-});
+}); 
+	

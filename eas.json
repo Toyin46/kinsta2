@@ -1,6 +1,6 @@
 {
   "cli": {
-    "version": ">= 13.2.0",
+    "version": ">= 5.9.1",
     "appVersionSource": "remote"
   },
   "build": {
@@ -8,35 +8,38 @@
       "developmentClient": true,
       "distribution": "internal",
       "android": {
-        "gradleCommand": ":app:assembleDebug",
-        "buildType": "apk"
+        "buildType": "apk",
+        "gradleCommand": ":app:assembleDebug"
       },
-      "ios": {
-        "buildConfiguration": "Debug"
-      },
-      "channel": "development"
+      "env": {
+        "APP_ENV": "development"
+      }
     },
     "preview": {
       "distribution": "internal",
       "android": {
         "buildType": "apk"
       },
-      "ios": {
-        "buildConfiguration": "Release"
-      },
-      "channel": "preview"
+      "env": {
+        "APP_ENV": "preview"
+      }
     },
     "production": {
+      "autoIncrement": true,
       "android": {
-        "buildType": "apk"
+        "buildType": "app-bundle"
       },
-      "ios": {
-        "buildConfiguration": "Release"
-      },
-      "channel": "production"
+      "env": {
+        "APP_ENV": "production"
+      }
     }
   },
   "submit": {
-    "production": {}
+    "production": {
+      "android": {
+        "serviceAccountKeyPath": "./google-play-key.json",
+        "track": "internal"
+      }
+    }
   }
-}
+} 
