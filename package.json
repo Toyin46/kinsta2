@@ -69,7 +69,7 @@
     "react-native-agora": "^4.6.2",
     "react-native-dotenv": "^3.4.11",
     "react-native-gesture-handler": "~2.20.2",
-    "react-native-google-mobile-ads": "^16.0.1",
+    "react-native-google-mobile-ads": "^13.1.0",
     "react-native-localize": "^3.6.0",
     "react-native-paystack-webview": "^5.0.3",
     "react-native-permissions": "^5.5.1",
