@@ -8,12 +8,15 @@ module.exports = function withDeepARFix(config) {
 
     config.modResults.contents += `
 // withDeepARFix-applied
-subprojects {
-  afterEvaluate { project ->
-    if (project.hasProperty('android')) {
-      project.android {
-        compileSdkVersion 35
-      }
+allprojects {
+  plugins.withId('com.android.library') {
+    android {
+      compileSdkVersion 35
+    }
+  }
+  plugins.withId('com.android.application') {
+    android {
+      compileSdkVersion 35
     }
   }
 }
