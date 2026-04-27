@@ -54,7 +54,6 @@
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
-      "./plugins/withDeepARFix",
       "expo-router",
       [
         "react-native-vision-camera",
