@@ -1,26 +1,41 @@
-const { withProjectBuildGradle } = require('@expo/config-plugins');
+const { withDangerousMod } = require('@expo/config-plugins');
+const fs = require('fs');
+const path = require('path');
 
 module.exports = function withDeepARFix(config) {
-  return withProjectBuildGradle(config, function(config) {
-    if (config.modResults.contents.includes('withDeepARFix-applied')) {
+  return withDangerousMod(config, [
+    'android',
+    function(config) {
+      const deeparGradle = path.join(
+        config.modRequest.projectRoot,
+        'node_modules',
+        'react-native-deepar',
+        'android',
+        'build.gradle'
+      );
+
+      if (fs.existsSync(deeparGradle)) {
+        let contents = fs.readFileSync(deeparGradle, 'utf8');
+
+        // Replace compileSdkVersion 29 with 35
+        contents = contents.replace(
+          /compileSdkVersion\s+\d+/g,
+          'compileSdkVersion 35'
+        );
+
+        // Replace targetSdkVersion if present
+        contents = contents.replace(
+          /targetSdkVersion\s+\d+/g,
+          'targetSdkVersion 34'
+        );
+
+        fs.writeFileSync(deeparGradle, contents, 'utf8');
+        console.log('[withDeepARFix] Patched react-native-deepar build.gradle');
+      } else {
+        console.warn('[withDeepARFix] react-native-deepar build.gradle not found');
+      }
+
       return config;
     }
-
-    config.modResults.contents += `
-// withDeepARFix-applied
-allprojects {
-  plugins.withId('com.android.library') {
-    android {
-      compileSdkVersion 35
-    }
-  }
-  plugins.withId('com.android.application') {
-    android {
-      compileSdkVersion 35
-    }
-  }
-}
-`;
-    return config;
-  });
+  ]);
 };
