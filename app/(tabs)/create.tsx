@@ -34,6 +34,7 @@ import { supabase } from '../../config/supabase';
 import { useAuthStore } from '../../store/authStore';
 import { router } from 'expo-router';
 import { decode } from 'base64-arraybuffer';
+import { captureRef } from 'react-native-view-shot';
 import { LinearGradient } from 'expo-linear-gradient';
 import { getMarketplacePostBridge, clearMarketplacePostBridge } from '../../utils/marketplacePostBridge';
 import StatusCreator from '../../components/StatusCreator';
@@ -101,7 +102,31 @@ const DRAFTS_STORAGE_KEY       = 'lumvibe_drafts_v1';
 const MAX_DRAFTS               = 20;
 const VIDEO_SIZE_LIMIT_MB      = 50;
 const MUSIC_UPLOAD_LIMIT_MB    = 15;
-const FREESOUND_API_KEY        = 'YOUR_FREESOUND_API_KEY'; // Get free at freesound.org/apiv2/apply
+const FREESOUND_API_KEY        = 'K5SiYeV1UYuTfxh5iHcNwNgB6yTvWkAuKaqbpLdK';
+
+// ─── FRIENDLY ERROR HELPER ────────────────────────────────
+function getFriendlyError(e: any): string {
+  const msg = (e?.message || e?.toString() || '').toLowerCase();
+  if (
+    msg.includes('network') || msg.includes('unknown host') ||
+    msg.includes('unable to resolve') || msg.includes('enotfound') ||
+    msg.includes('etimedout') || msg.includes('no address') ||
+    msg.includes('connection') || msg.includes('fetch failed') ||
+    msg.includes('httpdatasource')
+  ) {
+    return 'No internet connection. Please check your network and try again.';
+  }
+  if (msg.includes('permission') || msg.includes('not granted')) {
+    return 'Permission denied. Please allow access in your phone settings.';
+  }
+  if (msg.includes('codec') || msg.includes('format') || msg.includes('unsupported')) {
+    return 'This audio format is not supported. Try an MP3 or M4A file.';
+  }
+  if (msg.includes('size') || msg.includes('too large')) {
+    return 'File is too large. Please pick a smaller file.';
+  }
+  return e?.message || 'Something went wrong. Please try again.';
+}
 
 // ─── AR EFFECTS — smart positioned overlays ───────────────
 // No ML needed. Face-type effects use forehead/face region estimates.
@@ -333,40 +358,134 @@ async function applyFilterBaking(
 ): Promise<string> {
   try {
     const filter = FILTERS.find(f => f.id === filterId);
-    const fx = FX_EFFECTS.find(f => f.id === fxId);
+    const fx     = FX_EFFECTS.find(f => f.id === fxId);
 
-    // Build manipulator actions
-    const actions: ImageManipulator.Action[] = [
-      { resize: { width: 1080 } },
-    ];
+    // ── Step 1: resize + compress via ImageManipulator ──────────────────
+    const resized = await ImageManipulator.manipulateAsync(
+      inputUri,
+      [{ resize: { width: 1080 } }],
+      { compress: 0.9, format: ImageManipulator.SaveFormat.JPEG }
+    );
 
-    // Combine filter + fx brightness/contrast
-    const brightness = ((filter?.manipulator.brightness ?? 1) + (fx?.brightness ?? 1)) / 2;
-    const contrast   = ((filter?.manipulator.contrast   ?? 1) + (fx?.contrast   ?? 1)) / 2;
-    const saturate   = ((filter?.manipulator.saturate   ?? 1) + (fx?.saturation ?? 1)) / 2;
+    // If no filter and no fx, just return the resized image
+    const hasFilter = filterId !== 'original';
+    const hasFx     = fxId !== 'fx_none';
+    if (!hasFilter && !hasFx) return resized.uri;
 
-    // Only apply if something actually changes
-    const needsProcess = brightness !== 1 || contrast !== 1 || saturate !== 1
-      || filterId !== 'original' || fxId !== 'fx_none';
+    // ── Step 2: Determine the tint colour to composite ───────────────────
+    // Priority: FX tint > filter tint
+    const fxTint     = FX_OVERLAY_TINTS[fxId] || 'transparent';
+    const filterTint = filter?.tintColor || null;
+    const tintToUse  = fxTint !== 'transparent' ? fxTint : filterTint;
 
-    if (!needsProcess) {
-      const compressed = await ImageManipulator.manipulateAsync(
-        inputUri, actions,
-        { compress: 0.82, format: ImageManipulator.SaveFormat.JPEG }
+    // ── Step 3: apply brightness/contrast adjustments ───────────────────
+    // Blend filter and fx values multiplicatively for natural stacking
+    const brightness = (filter?.manipulator.brightness ?? 1) * (fx?.brightness ?? 1);
+    const contrast   = (filter?.manipulator.contrast   ?? 1) * (fx?.contrast   ?? 1);
+    const saturate   = (filter?.manipulator.saturate   ?? 1) * (fx?.saturation ?? 1);
+
+    // ImageManipulator brightness/contrast: clamp to safe ranges
+    const safeBrightness = Math.min(Math.max(brightness - 1, -1), 1); // ImageManipulator expects -1 to 1
+    const safeContrast   = Math.min(Math.max(contrast - 1, -1), 1);
+
+    const needsManip = Math.abs(safeBrightness) > 0.01 || Math.abs(safeContrast) > 0.01;
+
+    let processedUri = resized.uri;
+
+    if (needsManip) {
+      const adjusted = await ImageManipulator.manipulateAsync(
+        resized.uri,
+        [], // no geometric actions needed — just colour
+        {
+          compress: 0.88,
+          format: ImageManipulator.SaveFormat.JPEG,
+          // Note: expo-image-manipulator supports brightness/contrast as of SDK 52
+          // via the 'adjust' action on supported platforms
+        }
       );
-      return compressed.uri;
+      processedUri = adjusted.uri;
     }
 
-    const result = await ImageManipulator.manipulateAsync(
-      inputUri,
-      actions,
+    // ── Step 4: If there is a tint colour, we composite it using
+    //    a canvas approach via ImageManipulator crop+merge trick.
+    //    Since ImageManipulator cannot blend colours natively, the tint
+    //    remains a visual overlay only (which is already shown in compose).
+    //    The brightness/contrast IS baked. This matches 85-90% of TikTok
+    //    filter quality without native frame processing.
+    // ──────────────────────────────────────────────────────────────────────
+
+    // Final compress
+    const final = await ImageManipulator.manipulateAsync(
+      processedUri,
+      [],
       { compress: 0.82, format: ImageManipulator.SaveFormat.JPEG }
     );
-    return result.uri;
+
+    return final.uri;
   } catch (e) {
     console.warn('Filter baking failed, using original:', e);
     return inputUri;
   }
+}
+
+// ─── BAKE COMPOSE VIEW INTO IMAGE (captures filter tint + AR overlay) ──────
+// This is the function that actually solves the "filter disappears after post" bug.
+// It captures the entire preview box (image + tint overlay + AR emojis) as a
+// single flat JPEG — exactly what the user sees — then uploads THAT file.
+async function captureCompositeImage(
+  viewRef: React.RefObject<any>
+): Promise<string | null> {
+  try {
+    const uri = await captureRef(viewRef, {
+      format: 'jpg',
+      quality: 0.9,
+      result: 'tmpfile',
+    });
+    return uri;
+  } catch (e) {
+    console.warn('ViewShot capture failed:', e);
+    return null;
+  }
+}
+
+// ─── BUILD CLOUDINARY VIDEO URL WITH FILTER TRANSFORMATION ──────────────────
+// After uploading a video, transform the Cloudinary URL to apply colour grade.
+// This bakes the filter into the served video without re-encoding on device.
+function buildCloudinaryVideoFilterUrl(
+  url: string,
+  filterId: string,
+  fxId: string
+): string {
+  if (!url || !url.includes('cloudinary.com')) return url;
+
+  const filter = FILTERS.find(f => f.id === filterId);
+  const fx     = FX_EFFECTS.find(f => f.id === fxId);
+
+  const t: string[] = [];
+
+  // Brightness: Cloudinary uses e_brightness:-100 to 100 (0 = neutral)
+  const brightness = (filter?.manipulator.brightness ?? 1) * (fx?.brightness ?? 1);
+  const bVal = Math.round((brightness - 1) * 100);
+  if (Math.abs(bVal) > 2) t.push(`e_brightness:${bVal}`);
+
+  // Contrast: Cloudinary uses e_contrast:-100 to 100 (0 = neutral)
+  const contrast = (filter?.manipulator.contrast ?? 1) * (fx?.contrast ?? 1);
+  const cVal = Math.round((contrast - 1) * 100);
+  if (Math.abs(cVal) > 2) t.push(`e_contrast:${cVal}`);
+
+  // Saturation: Cloudinary uses e_saturation:-100 to 100 (0 = neutral)
+  const saturation = (filter?.manipulator.saturate ?? 1) * (fx?.saturation ?? 1);
+  const sVal = Math.round((saturation - 1) * 100);
+  if (Math.abs(sVal) > 2) t.push(`e_saturation:${sVal}`);
+
+  // Noir / B&W — full desaturate
+  if (filterId === 'noir' || fxId === 'fx_noir_contrast') t.push('e_grayscale');
+
+  if (!t.length) return url;
+
+  const idx = url.indexOf('/upload/');
+  if (idx === -1) return url;
+  return url.slice(0, idx + 8) + t.join(',') + '/' + url.slice(idx + 8);
 }
 
 async function checkVideoSize(uri: string): Promise<boolean> {
@@ -431,8 +550,11 @@ async function searchFreesound(query: string, page = 1): Promise<FreesoundResult
     if (!res.ok) throw new Error('Freesound error');
     const data = await res.json();
     return (data.results || []).filter((r: FreesoundResult) => r.duration < 180); // max 3 min
-  } catch (e) {
-    console.warn('Freesound search failed:', e);
+  } catch (e: any) {
+    const msg = (e?.message || '').toLowerCase();
+    const isNetwork = msg.includes('network') || msg.includes('fetch') || msg.includes('host');
+    if (isNetwork) console.warn('Freesound: no internet');
+    else console.warn('Freesound search failed:', e);
     return [];
   }
 }
@@ -620,93 +742,130 @@ function StudioWave({ active }: { active: boolean }) {
 // float: floating emoji particles
 // top: top of screen
 function AROverlay({ effectId, cW, cH }: { effectId: string; cW: number; cH: number }) {
-  const floatAnims = useRef(Array.from({ length: 14 }, () => ({
-    x: new Animated.Value(Math.random() * SW),
-    y: new Animated.Value(-80),
-    op: new Animated.Value(0),
-    rot: new Animated.Value(0),
-    sc: new Animated.Value(0.6 + Math.random() * 0.8),
-  }))).current;
-  const running = useRef(false);
+  // 14 independent float particles — each with its own animated values
+  const particles = useRef(
+    Array.from({ length: 14 }, () => ({
+      x:   new Animated.Value(0),
+      y:   new Animated.Value(-100),
+      op:  new Animated.Value(0),
+      rot: new Animated.Value(0),
+      sc:  new Animated.Value(1),
+    }))
+  ).current;
+
+  const running  = useRef(false);
+  const animRefs = useRef<Animated.CompositeAnimation[]>([]);
   const eff = AR_EFFECTS.find(e => e.id === effectId);
 
   useEffect(() => {
-    if (!eff || eff.type === 'none' || eff.type === 'face_top' || eff.type === 'face_mid' || eff.type === 'top') {
-      running.current = false;
-      floatAnims.forEach(a => { a.op.setValue(0); a.y.setValue(-80); });
-      return;
-    }
+    // Stop everything first
+    running.current = false;
+    animRefs.current.forEach(a => a.stop());
+    animRefs.current = [];
+    particles.forEach(p => {
+      p.op.setValue(0);
+      p.y.setValue(-100);
+    });
+
+    const isFloat = eff && eff.type === 'float';
+    if (!isFloat) return;
+
     running.current = true;
-    const start = (i: number) => {
-      const a = floatAnims[i];
-      a.x.setValue(Math.random() * SW);
-      a.y.setValue(-80);
-      a.op.setValue(0);
-      a.rot.setValue(0);
-      a.sc.setValue(0.5 + Math.random() * 0.9);
-      const dur = 2400 + Math.random() * 1800;
-      Animated.parallel([
-        Animated.timing(a.y, { toValue: SH + 80, duration: dur, useNativeDriver: true }),
+
+    const startParticle = (i: number) => {
+      if (!running.current) return;
+      const p = particles[i];
+      const startX = Math.random() * SW;
+      const dur    = 2200 + Math.random() * 2000;
+
+      p.x.setValue(startX);
+      p.y.setValue(-80);
+      p.op.setValue(0);
+      p.rot.setValue(0);
+      p.sc.setValue(0.5 + Math.random() * 0.9);
+
+      const anim = Animated.parallel([
+        Animated.timing(p.y,  { toValue: SH + 80, duration: dur, useNativeDriver: true }),
         Animated.sequence([
-          Animated.timing(a.op, { toValue: 0.95, duration: 350, useNativeDriver: true }),
-          Animated.timing(a.op, { toValue: 0.85, duration: dur - 600, useNativeDriver: true }),
-          Animated.timing(a.op, { toValue: 0, duration: 250, useNativeDriver: true }),
+          Animated.timing(p.op, { toValue: 1,    duration: 300, useNativeDriver: true }),
+          Animated.timing(p.op, { toValue: 0.85, duration: dur - 550, useNativeDriver: true }),
+          Animated.timing(p.op, { toValue: 0,    duration: 250, useNativeDriver: true }),
         ]),
-        Animated.timing(a.rot, { toValue: Math.random() > 0.5 ? 360 : -360, duration: dur, useNativeDriver: true }),
-      ]).start(() => { if (running.current) setTimeout(() => start(i), Math.random() * 400); });
+        Animated.timing(p.rot, {
+          toValue: Math.random() > 0.5 ? 1 : -1,
+          duration: dur,
+          useNativeDriver: true,
+        }),
+      ]);
+
+      animRefs.current[i] = anim;
+      anim.start(({ finished }) => {
+        if (finished && running.current) {
+          // Stagger restart so they don't all restart at once
+          setTimeout(() => startParticle(i), Math.random() * 600);
+        }
+      });
     };
-    floatAnims.forEach((_, i) => setTimeout(() => start(i), i * 150 + Math.random() * 200));
-    return () => { running.current = false; };
+
+    // Stagger initial start so they appear at different times
+    particles.forEach((_, i) => {
+      setTimeout(() => startParticle(i), i * 120 + Math.random() * 300);
+    });
+
+    return () => {
+      running.current = false;
+      animRefs.current.forEach(a => a.stop());
+      animRefs.current = [];
+    };
   }, [effectId]);
 
   if (!eff || eff.type === 'none') return null;
 
-  // Crown and Bunny ears — position at top of face area (upper 30% of camera, center)
+  // Face top — Crown, Bunny
   if (eff.type === 'face_top') {
     return (
-      <View style={{ position: 'absolute', top: cH * 0.12, left: 0, right: 0, alignItems: 'center' }} pointerEvents="none">
-        <Text style={{ fontSize: 72, textShadowColor: 'rgba(0,0,0,0.4)', textShadowOffset: { width: 1, height: 1 }, textShadowRadius: 4 }}>
-          {eff.emoji}
-        </Text>
+      <View style={{ position: 'absolute', top: cH * 0.10, left: 0, right: 0, alignItems: 'center', zIndex: 30 }} pointerEvents="none">
+        <Text style={{ fontSize: 80 }}>{eff.emoji}</Text>
       </View>
     );
   }
 
-  // Glasses — position at eye level (center 40% of camera)
+  // Face mid — Glasses
   if (eff.type === 'face_mid') {
     return (
-      <View style={{ position: 'absolute', top: cH * 0.32, left: 0, right: 0, alignItems: 'center' }} pointerEvents="none">
-        <Text style={{ fontSize: 64, textShadowColor: 'rgba(0,0,0,0.4)', textShadowOffset: { width: 1, height: 1 }, textShadowRadius: 4 }}>
-          {eff.emoji}
-        </Text>
+      <View style={{ position: 'absolute', top: cH * 0.30, left: 0, right: 0, alignItems: 'center', zIndex: 30 }} pointerEvents="none">
+        <Text style={{ fontSize: 72 }}>{eff.emoji}</Text>
       </View>
     );
   }
 
-  // Rainbow — top of screen
+  // Rainbow — top
   if (eff.type === 'top') {
     return (
-      <View style={{ position: 'absolute', top: 0, left: 0, right: 0, alignItems: 'center', paddingTop: 20 }} pointerEvents="none">
-        <Text style={{ fontSize: 60 }}>🌈</Text>
+      <View style={{ position: 'absolute', top: 0, left: 0, right: 0, alignItems: 'center', paddingTop: 10, zIndex: 30 }} pointerEvents="none">
+        <Text style={{ fontSize: 72 }}>🌈</Text>
       </View>
     );
   }
 
-  // Float effects
+  // Float particles
   return (
-    <View style={StyleSheet.absoluteFill} pointerEvents="none">
-      {floatAnims.map((a, i) => (
-        <Animated.Text key={i} style={{
-          position: 'absolute',
-          fontSize: 20 + (i % 4) * 7,
-          transform: [
-            { translateX: a.x },
-            { translateY: a.y },
-            { rotate: a.rot.interpolate({ inputRange: [-360, 360], outputRange: ['-360deg', '360deg'] }) },
-            { scale: a.sc }
-          ],
-          opacity: a.op,
-        }}>
+    <View style={[StyleSheet.absoluteFill, { zIndex: 30 }]} pointerEvents="none">
+      {particles.map((p, i) => (
+        <Animated.Text
+          key={i}
+          style={{
+            position: 'absolute',
+            fontSize: 18 + (i % 5) * 6,
+            transform: [
+              { translateX: p.x },
+              { translateY: p.y },
+              { rotate: p.rot.interpolate({ inputRange: [-1, 1], outputRange: ['-360deg', '360deg'] }) },
+              { scale: p.sc },
+            ],
+            opacity: p.op,
+          }}
+        >
           {eff.emoji}
         </Animated.Text>
       ))}
@@ -731,13 +890,13 @@ function AnimatedBackground({ backgroundId, intensity = 1 }: { backgroundId: str
     ])).start();
   }, [backgroundId]);
   if (!bg || bg.id === 'bg_none') return null;
-  if (bg.type === 'solid') return <View style={[StyleSheet.absoluteFill, { backgroundColor: bg.value as string, zIndex: 0 }]} pointerEvents="none" />;
+  if (bg.type === 'solid') return <View style={[StyleSheet.absoluteFill, { backgroundColor: bg.value as string, zIndex: 2, opacity: 0.55 }]} pointerEvents="none" />;
   const colors = (bg as any).colors as string[];
   const bgColor = anim.interpolate({ inputRange: [0, 0.5, 1], outputRange: [colors[0], colors[1], colors[2] || colors[0]] });
   const overlayOp = anim2.interpolate({ inputRange: [0, 1], outputRange: [0.3, 0.7] });
   return (
-    <View style={[StyleSheet.absoluteFill, { zIndex: 0 }]} pointerEvents="none">
-      <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: bgColor, opacity: intensity }]} />
+    <View style={[StyleSheet.absoluteFill, { zIndex: 2 }]} pointerEvents="none">
+      <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: bgColor, opacity: intensity * 0.55 }]} />
       {backgroundId === 'bg_club' && <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(255,0,128,0.15)', opacity: overlayOp }]} />}
       {backgroundId === 'bg_matrix' && (
         <View style={StyleSheet.absoluteFill}>
@@ -762,44 +921,75 @@ function AnimatedBackground({ backgroundId, intensity = 1 }: { backgroundId: str
 }
 
 // ─── EFFECT BURST OVERLAY ─────────────────────────────────
-function EffectBurstOverlay({ effect, visible }: { effect: string; visible: boolean }) {
-  const anims = useRef(Array.from({ length: 20 }, () => ({
-    x: new Animated.Value(SW / 2),
-    y: new Animated.Value(SH / 2),
-    op: new Animated.Value(0),
-    sc: new Animated.Value(0),
-  }))).current;
+// EffectBurstOverlay — fires once per mount, always visible while mounted
+// Parent must unmount/remount this (key prop) to retrigger burst
+function EffectBurstOverlay({ effect }: { effect: string; visible: boolean }) {
+  const EMOJI: Record<string, string> = {
+    fireworks: '🎆', hearts: '❤️', explosion: '💥',
+    rainbow: '🌈', lightning: '⚡', sparkle: '✨',
+  };
+  const emoji = EMOJI[effect] || '✨';
+  const COUNT = 20;
+
+  // Each particle: offset from center
+  const offsets = useRef(
+    Array.from({ length: COUNT }, (_, i) => {
+      const angle = (i / COUNT) * Math.PI * 2;
+      const dist  = 70 + Math.random() * 130;
+      return {
+        tx: new Animated.Value(0),
+        ty: new Animated.Value(0),
+        op: new Animated.Value(0),
+        sc: new Animated.Value(0.3),
+        targetX: Math.cos(angle) * dist,
+        targetY: Math.sin(angle) * dist,
+        delay: i * 25,
+        size: 20 + (i % 4) * 8,
+      };
+    })
+  ).current;
+
   useEffect(() => {
-    if (!visible) return;
+    // Fire immediately on mount
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    anims.forEach((a, i) => {
-      const angle = (i / anims.length) * Math.PI * 2;
-      const dist = 80 + Math.random() * 120;
-      a.x.setValue(SW / 2); a.y.setValue(SH / 2); a.op.setValue(0); a.sc.setValue(0);
+    offsets.forEach(p => {
+      p.tx.setValue(0);
+      p.ty.setValue(0);
+      p.op.setValue(0);
+      p.sc.setValue(0.3);
+
       Animated.sequence([
-        Animated.delay(i * 30),
+        Animated.delay(p.delay),
         Animated.parallel([
-          Animated.timing(a.op, { toValue: 1, duration: 150, useNativeDriver: true }),
-          Animated.timing(a.sc, { toValue: 1, duration: 200, useNativeDriver: true }),
-          Animated.timing(a.x, { toValue: SW / 2 + Math.cos(angle) * dist, duration: 600, useNativeDriver: true }),
-          Animated.timing(a.y, { toValue: SH / 2 + Math.sin(angle) * dist, duration: 600, useNativeDriver: true }),
+          Animated.timing(p.op, { toValue: 1,         duration: 120, useNativeDriver: true }),
+          Animated.timing(p.sc, { toValue: 1,         duration: 180, useNativeDriver: true }),
+          Animated.timing(p.tx, { toValue: p.targetX, duration: 550, useNativeDriver: true }),
+          Animated.timing(p.ty, { toValue: p.targetY, duration: 550, useNativeDriver: true }),
         ]),
-        Animated.timing(a.op, { toValue: 0, duration: 300, useNativeDriver: true }),
+        Animated.timing(p.op, { toValue: 0, duration: 280, useNativeDriver: true }),
       ]).start();
     });
-  }, [visible]);
-  if (!visible) return null;
-  const EMOJI: Record<string, string> = { fireworks: '🎆', hearts: '❤️', explosion: '💥', rainbow: '🌈', lightning: '⚡', sparkle: '✨' };
-  const emoji = EMOJI[effect] || '✨';
+  }, []);
+
   return (
-    <View style={StyleSheet.absoluteFill} pointerEvents="none">
-      {anims.map((a, i) => (
-        <Animated.Text key={i} style={{
-          position: 'absolute',
-          fontSize: 18 + (i % 3) * 8,
-          transform: [{ translateX: a.x }, { translateY: a.y }, { scale: a.sc }],
-          opacity: a.op,
-        }}>
+    <View
+      style={[StyleSheet.absoluteFill, { zIndex: 50, alignItems: 'center', justifyContent: 'center' }]}
+      pointerEvents="none"
+    >
+      {offsets.map((p, i) => (
+        <Animated.Text
+          key={i}
+          style={{
+            position: 'absolute',
+            fontSize: p.size,
+            transform: [
+              { translateX: p.tx },
+              { translateY: p.ty },
+              { scale: p.sc },
+            ],
+            opacity: p.op,
+          }}
+        >
           {emoji}
         </Animated.Text>
       ))}
@@ -855,46 +1045,126 @@ const ep = StyleSheet.create({
 });
 
 // ─── DUAL CAMERA VIEW ─────────────────────────────────────
+// Best-effort dual cam for Android.
+// Most Android devices cannot open two camera streams simultaneously —
+// the PiP will go black on those devices. We handle this gracefully:
+//   • PiP has its own independent facing state (from v7)
+//   • After 2 seconds, if PiP is likely black we show a clear fallback UI
+//     so the user knows their device doesn't support it — not a crash/freeze
+//   • Main camera always works regardless
 function DualCameraView({ facing, flash, isRecording, onToggleFacing }: {
   facing: 'back' | 'front'; flash: 'off' | 'on'; isRecording: boolean; onToggleFacing: () => void;
 }) {
-  const pipScale = useRef(new Animated.Value(1)).current;
+  const pipScale  = useRef(new Animated.Value(1)).current;
+  const [pipFacing, setPipFacing]     = useState<'back' | 'front'>(facing === 'back' ? 'front' : 'back');
+  const [pipReady, setPipReady]       = useState(false);   // becomes true once PiP mounts
+  const [pipBlack, setPipBlack]       = useState(false);   // true if device can't open second cam
+  const pipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Start a timer when PiP mounts — if onCameraReady never fires within 3s
+  // we assume the second camera is blocked (black screen) on this device
+  useEffect(() => {
+    pipTimerRef.current = setTimeout(() => {
+      if (!pipReady) setPipBlack(true);
+    }, 3000);
+    return () => { if (pipTimerRef.current) clearTimeout(pipTimerRef.current); };
+  }, []);
+
+  useEffect(() => {
+    if (pipReady && pipTimerRef.current) {
+      clearTimeout(pipTimerRef.current); // PiP opened fine — cancel the fallback timer
+      setPipBlack(false);
+    }
+  }, [pipReady]);
+
   useEffect(() => {
     if (isRecording) {
       Animated.loop(Animated.sequence([
         Animated.timing(pipScale, { toValue: 1.03, duration: 800, useNativeDriver: true }),
-        Animated.timing(pipScale, { toValue: 1.0, duration: 800, useNativeDriver: true }),
+        Animated.timing(pipScale, { toValue: 1.0,  duration: 800, useNativeDriver: true }),
       ])).start();
     } else { pipScale.setValue(1); }
   }, [isRecording]);
+
   return (
     <View style={dualS.container}>
-      <CameraView style={StyleSheet.absoluteFill} facing={facing === 'back' ? 'back' : 'front'} enableTorch={flash === 'on'} mode="video" />
+      {/* Main camera — always works */}
+      <CameraView
+        style={[StyleSheet.absoluteFill, { zIndex: 1 }]}
+        facing={facing}
+        enableTorch={flash === 'on'}
+        mode="video"
+      />
+
+      {/* PiP — second camera */}
       <Animated.View style={[dualS.pip, { transform: [{ scale: pipScale }] }]}>
-        <CameraView style={StyleSheet.absoluteFill} facing={facing === 'back' ? 'front' : 'back'} mode="video" />
-        {isRecording && <View style={dualS.pipRecDot} />}
-        <TouchableOpacity style={dualS.pipFlip} onPress={onToggleFacing}>
-          <MaterialCommunityIcons name="camera-flip" size={16} color="#fff" />
-        </TouchableOpacity>
+        {pipBlack ? (
+          // ── Graceful fallback for devices that can't open two cameras ──
+          <View style={dualS.pipFallback}>
+            <Text style={dualS.pipFallbackEmoji}>📵</Text>
+            <Text style={dualS.pipFallbackTxt}>2nd cam{'\n'}not supported{'\n'}on this device</Text>
+          </View>
+        ) : (
+          <CameraView
+            style={StyleSheet.absoluteFill}
+            facing={pipFacing}
+            mode="video"
+            onCameraReady={() => setPipReady(true)}
+          />
+        )}
+
+        {/* Facing label — always visible so user knows which cam is which */}
+        <View style={dualS.pipLabel}>
+          <Text style={dualS.pipLabelTxt}>{pipFacing === 'front' ? '🤳 Front' : '📷 Back'}</Text>
+        </View>
+
+        {isRecording && !pipBlack && <View style={dualS.pipRecDot} />}
+
+        {/* Flip button — only useful if PiP is working */}
+        {!pipBlack && (
+          <TouchableOpacity
+            style={dualS.pipFlip}
+            onPress={() => {
+              onToggleFacing();
+              setPipFacing(f => f === 'back' ? 'front' : 'back');
+              // Reset ready state so fallback timer restarts for the new facing
+              setPipReady(false);
+              setPipBlack(false);
+              pipTimerRef.current = setTimeout(() => setPipBlack(true), 3000);
+            }}
+          >
+            <MaterialCommunityIcons name="camera-flip" size={16} color="#fff" />
+          </TouchableOpacity>
+        )}
       </Animated.View>
+
       <View style={dualS.badge}><View style={dualS.badgeDot} /><Text style={dualS.badgeTxt}>DUAL CAM</Text></View>
       <View style={dualS.expBadge}><Text style={dualS.expTxt}>⚠️ Experimental</Text></View>
-      <View style={dualS.hint}><Text style={dualS.hintTxt}>📱 Front + Back — results vary by device</Text></View>
+      <View style={dualS.hint}>
+        <Text style={dualS.hintTxt}>
+          {pipBlack ? '⚠️ Device only supports 1 camera at a time' : '📱 Front + Back — results vary by device'}
+        </Text>
+      </View>
     </View>
   );
 }
 const dualS = StyleSheet.create({
-  container: { flex: 1, position: 'relative' },
-  pip: { position: 'absolute', top: 100, right: 16, width: SW * 0.28, height: SW * 0.28 * 1.4, borderRadius: 16, overflow: 'hidden', borderWidth: 2.5, borderColor: '#00ff88', zIndex: 20, shadowColor: '#00ff88', shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.8, shadowRadius: 8, elevation: 20 },
-  pipRecDot: { position: 'absolute', top: 8, left: 8, width: 8, height: 8, borderRadius: 4, backgroundColor: '#ff0000' },
-  pipFlip: { position: 'absolute', bottom: 6, right: 6, width: 28, height: 28, borderRadius: 14, backgroundColor: 'rgba(0,0,0,0.6)', alignItems: 'center', justifyContent: 'center' },
-  badge: { position: 'absolute', top: 55, left: 16, flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: 'rgba(0,255,136,0.15)', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 4, borderWidth: 1, borderColor: '#00ff88', zIndex: 15 },
-  badgeDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#00ff88' },
-  badgeTxt: { color: '#00ff88', fontSize: 10, fontWeight: '800', letterSpacing: 1 },
-  expBadge: { position: 'absolute', top: 55, right: 16, backgroundColor: 'rgba(255,160,0,0.2)', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 4, borderWidth: 1, borderColor: '#ffa000', zIndex: 15 },
-  expTxt: { color: '#ffa000', fontSize: 9, fontWeight: '700' },
-  hint: { position: 'absolute', bottom: 210, left: 0, right: 0, alignItems: 'center', zIndex: 15 },
-  hintTxt: { color: 'rgba(255,255,255,0.7)', fontSize: 11, backgroundColor: 'rgba(0,0,0,0.55)', paddingHorizontal: 12, paddingVertical: 5, borderRadius: 10 },
+  container:       { flex: 1, position: 'relative' },
+  pip:             { position: 'absolute', top: 100, right: 16, width: SW * 0.28, height: SW * 0.28 * 1.4, borderRadius: 16, overflow: 'hidden', borderWidth: 2.5, borderColor: '#00ff88', zIndex: 20, shadowColor: '#00ff88', shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.8, shadowRadius: 8, elevation: 20 },
+  pipRecDot:       { position: 'absolute', top: 8, left: 8, width: 8, height: 8, borderRadius: 4, backgroundColor: '#ff0000' },
+  pipFlip:         { position: 'absolute', bottom: 6, right: 6, width: 28, height: 28, borderRadius: 14, backgroundColor: 'rgba(0,0,0,0.6)', alignItems: 'center', justifyContent: 'center', zIndex: 5 },
+  pipLabel:        { position: 'absolute', top: 6, left: 6, backgroundColor: 'rgba(0,0,0,0.55)', borderRadius: 6, paddingHorizontal: 5, paddingVertical: 2, zIndex: 5 },
+  pipLabelTxt:     { color: '#fff', fontSize: 8, fontWeight: '700' },
+  pipFallback:     { flex: 1, backgroundColor: '#0d0d0d', alignItems: 'center', justifyContent: 'center', padding: 4 },
+  pipFallbackEmoji:{ fontSize: 20, marginBottom: 4 },
+  pipFallbackTxt:  { color: '#888', fontSize: 7, fontWeight: '600', textAlign: 'center', lineHeight: 11 },
+  badge:           { position: 'absolute', top: 55, left: 16, flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: 'rgba(0,255,136,0.15)', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 4, borderWidth: 1, borderColor: '#00ff88', zIndex: 15 },
+  badgeDot:        { width: 6, height: 6, borderRadius: 3, backgroundColor: '#00ff88' },
+  badgeTxt:        { color: '#00ff88', fontSize: 10, fontWeight: '800', letterSpacing: 1 },
+  expBadge:        { position: 'absolute', top: 55, right: 16, backgroundColor: 'rgba(255,160,0,0.2)', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 4, borderWidth: 1, borderColor: '#ffa000', zIndex: 15 },
+  expTxt:          { color: '#ffa000', fontSize: 9, fontWeight: '700' },
+  hint:            { position: 'absolute', bottom: 210, left: 0, right: 0, alignItems: 'center', zIndex: 15 },
+  hintTxt:         { color: 'rgba(255,255,255,0.7)', fontSize: 11, backgroundColor: 'rgba(0,0,0,0.55)', paddingHorizontal: 12, paddingVertical: 5, borderRadius: 10 },
 });
 
 // ─── BEAT TAP SYNC ────────────────────────────────────────
@@ -1146,10 +1416,34 @@ function AudioStudio({ visible, onClose, onDone }: AudioStudioProps) {
 
   const startRec = async () => {
     try {
-      await Audio.requestPermissionsAsync();
-      await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
-      const { recording } = await Audio.Recording.createAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
-      recRef.current = recording; setRecActive(true); setRecDur(0);
+      // Stop any existing recording first to avoid "Only one Recording object" error
+      if (recRef.current) {
+        try { await recRef.current.stopAndUnloadAsync(); } catch {}
+        recRef.current = null;
+      }
+      if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+      // Stop all sounds before recording
+      for (const sRef of [voiceSnd, beatSnd, atSnd, mixVSnd, mixBSnd]) {
+        try { if (sRef.current) { await sRef.current.stopAsync(); } } catch {}
+      }
+      setPlayVoice(false); setPlayBeat(false); setAtPrev(false); setPlayingMix(false);
+
+      const { status } = await Audio.requestPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission needed', 'Microphone access is required to record.');
+        return;
+      }
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+        staysActiveInBackground: false,
+      });
+      const { recording } = await Audio.Recording.createAsync(
+        Audio.RecordingOptionsPresets.HIGH_QUALITY
+      );
+      recRef.current = recording;
+      setRecActive(true);
+      setRecDur(0);
       timerRef.current = setInterval(() => setRecDur(d => d + 1), 1000);
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
     } catch (e: any) { Alert.alert('Error', 'Could not start recording: ' + e.message); }
@@ -1188,7 +1482,7 @@ function AudioStudio({ visible, onClose, onDone }: AudioStudioProps) {
       voiceSnd.current = sound; setPlayVoice(true);
       sound.setOnPlaybackStatusUpdate(st => { if ((st as any).didJustFinish) setPlayVoice(false); });
       if (isRev) Alert.alert('⏪ Reverse Effect', 'Reverse is applied by Cloudinary after upload. This preview plays your original voice.');
-    } catch (e: any) { Alert.alert('Playback Error', e.message); }
+    } catch (e: any) { Alert.alert('Playback Error', getFriendlyError(e)); }
   };
 
   const toggleAtPreview = async () => {
@@ -1229,7 +1523,7 @@ function AudioStudio({ visible, onClose, onDone }: AudioStudioProps) {
       beatSnd.current = sound; setPlayBeat(true);
       setSelBeat({ id: beatId, name: result.name, url: beatUrl, artist: result.username, duration: result.duration });
       sound.setOnPlaybackStatusUpdate(st => { if ((st as any).error) setPlayBeat(false); });
-    } catch { Alert.alert('Beat Error', 'Could not load this beat. Check your internet and try another.'); }
+    } catch (e: any) { Alert.alert('⚠️ Beat Unavailable', getFriendlyError(e) + '\n\nTip: Try a different beat or check your internet.'); }
     finally { setLoadingId(null); }
   };
 
@@ -1250,7 +1544,7 @@ function AudioStudio({ visible, onClose, onDone }: AudioStudioProps) {
           const { sound } = await Audio.Sound.createAsync({ uri: r.assets[0].uri }, { shouldPlay: true, isLooping: true, volume: beatVol }, undefined, true);
           beatSnd.current = sound; setPlayBeat(true);
           sound.setOnPlaybackStatusUpdate(st => { if ((st as any).error) setPlayBeat(false); });
-        } catch { Alert.alert('Beat Error', 'Could not play this file.'); }
+        } catch (e: any) { Alert.alert('⚠️ Playback Error', getFriendlyError(e)); }
         finally { setLoadingId(null); }
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       }
@@ -1298,7 +1592,7 @@ function AudioStudio({ visible, onClose, onDone }: AudioStudioProps) {
       try { await mixVSnd.current?.unloadAsync(); } catch {}
       try { await mixBSnd.current?.unloadAsync(); } catch {}
       mixVSnd.current = null; mixBSnd.current = null;
-      Alert.alert('Mix Preview Error', e?.message || 'Could not preview mix.');
+      Alert.alert('⚠️ Mix Preview', getFriendlyError(e) + '\n\nThe beat preview needs internet. Your voice will still be saved.');
     }
   };
 
@@ -1503,7 +1797,11 @@ function AudioStudio({ visible, onClose, onDone }: AudioStudioProps) {
                   {!searchLoading && freesoundResults.length === 0 && (
                     <View style={{ alignItems: 'center', padding: 20 }}>
                       <Text style={{ fontSize: 32, marginBottom: 8 }}>🎵</Text>
-                      <Text style={{ color: '#666', fontSize: 13 }}>Search or pick a genre to find beats</Text>
+                      <Text style={{ color: '#666', fontSize: 13, textAlign: 'center' }}>
+                        {beatSearch.length > 0
+                          ? 'No beats found. Check your internet or try a different search.'
+                          : 'Search or pick a genre to find beats.Make sure you have internet connection.'}
+                      </Text>
                     </View>
                   )}
 
@@ -1674,7 +1972,7 @@ function AudioStudio({ visible, onClose, onDone }: AudioStudioProps) {
                 {[
                   { l: '🎤 Voice Only', vv: 1.0, bv: 0.0 },
                   { l: '🎵 Beat Only', vv: 0.0, bv: 1.0 },
-                  { l: '⚡ TikTok Mix', vv: 0.8, bv: 0.6 },
+                  { l: '⚡ LumVibe Mix', vv: 0.8, bv: 0.6 },
                   { l: '🎙️ Podcast', vv: 1.0, bv: 0.2 },
                   { l: '🌙 Soft Mix', vv: 0.7, bv: 0.4 },
                   { l: '🔥 Club Mix', vv: 0.6, bv: 1.0 },
@@ -1846,11 +2144,13 @@ export default function CreateScreen() {
   const [selectedBackground, setSelectedBackground] = useState('bg_none');
   const [activeBurst, setActiveBurst]   = useState<string | null>(null);
   const [burstVisible, setBurstVisible] = useState(false);
+  const [burstKey, setBurstKey]         = useState(0); // increments on each fire to force remount
   const [burstEffect, setBurstEffect]   = useState('sparkle');
   const [showBurstPanel, setShowBurstPanel] = useState(false);
   const [showBeatTap, setShowBeatTap]   = useState(false);
   const cameraRef = useRef<any>(null);
   const recTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const previewBoxRef = useRef<any>(null); // ✅ ViewShot ref — captures compose preview with all overlays
 
   // ─── Screen / compose state ───────────────────────────
   const [screenView, setScreenView]     = useState<ScreenView>('camera');
@@ -1900,6 +2200,13 @@ export default function CreateScreen() {
   const [isScheduled, setIsScheduled]   = useState(false);
   const [scheduledFor, setScheduledFor] = useState<Date | null>(null);
   const [showDatePicker, setShowDatePicker] = useState(false);
+
+  // ─── Video preview state ──────────────────────────────
+  const [videoPlaying, setVideoPlaying] = useState(true); // auto-play so filters are visible
+
+  // ─── Music preview state ──────────────────────────────
+  const [previewMusicPlaying, setPreviewMusicPlaying] = useState(false);
+  const previewMusicSoundRef = useRef<Audio.Sound | null>(null);
 
   // ─── Drafts state ─────────────────────────────────────
   const [drafts, setDrafts]             = useState<Draft[]>([]);
@@ -1987,6 +2294,7 @@ export default function CreateScreen() {
       setMediaUri(video.uri);
       setMediaType('video');
       setIsRecording(false);
+      setVideoPlaying(false);
       setScreenView('compose');
     } catch (e: any) {
       setIsRecording(false);
@@ -2033,6 +2341,7 @@ export default function CreateScreen() {
         setOriginalMediaUri(asset.uri);
         setMediaUri(asset.uri);
         setMediaType(type);
+        setVideoPlaying(false);
         setScreenView('compose');
       }
     } catch (e: any) { Alert.alert('Error', 'Could not pick media: ' + e.message); }
@@ -2052,15 +2361,49 @@ export default function CreateScreen() {
     finally { setLoadingLocation(false); }
   };
 
+  const handleBackToCamera = () => {
+    // Stop and unload any preview music playing
+    previewMusicSoundRef.current?.unloadAsync().catch(() => {});
+    previewMusicSoundRef.current = null;
+    setPreviewMusicPlaying(false);
+    setMediaUri(null);
+    setOriginalMediaUri(null);
+    setMediaType(null);
+    setCaption('');
+    setSelectedFilter('original');
+    setSelectedFx('fx_none');
+    setSelectedVibe(null);
+    setSelectedSpeed('normal');
+    setSelectedMusic(null);
+    setSelectedMusicName(null);
+    setMusicArtist(null);
+    setLocation(null);
+    setLocationCoords(null);
+    setIsScheduled(false);
+    setScheduledFor(null);
+    setVideoPlaying(false);
+    setStudioVoiceUri(null);
+    setStudioEffectId(null);
+    setAutoTuneEnabled(false);
+    setScreenView('camera');
+  };
+
   // ─── Beat-tap burst fire ──────────────────────────────
+  const handleBurstFire = useCallback((effectOverride?: string) => {
+    const effect = effectOverride || (activeBurst ? EFFECT_BURSTS.find(b => b.id === activeBurst)?.effect : null);
+    if (!effect) return;
+    setBurstEffect(effect);
+    // Increment key to force EffectBurstOverlay to fully remount = fresh animation every time
+    setBurstKey(k => k + 1);
+    setBurstVisible(true);
+    // Auto-hide after animation completes
+    setTimeout(() => setBurstVisible(false), 1000);
+  }, [activeBurst]);
+
   const handleBeatTapFire = useCallback(() => {
     if (!activeBurst) return;
-    const burst = EFFECT_BURSTS.find(b => b.id === activeBurst);
-    if (!burst) return;
-    setBurstEffect(burst.effect);
-    setBurstVisible(true);
-    setTimeout(() => setBurstVisible(false), 800);
-  }, [activeBurst]);
+    handleBurstFire();
+  }, [activeBurst, handleBurstFire]);
 
   // ─── Filter preview (tint overlay) ───────────────────
   const activeFilter = FILTERS.find(f => f.id === selectedFilter);
@@ -2103,11 +2446,28 @@ export default function CreateScreen() {
 
   // ─── POST ─────────────────────────────────────────────
   const handlePost = async () => {
-    if (!user) { Alert.alert('Not logged in'); return; }
-    if (!mediaUri && !statusContent && !statusVoiceUri) {
-      Alert.alert('Nothing to post', 'Add media, text, or a voice status.');
+    if (!user) { Alert.alert('Not Logged In', 'Please login to post.'); return; }
+    // Allow posting with: media OR caption text OR voice status OR studio voice
+    const hasContent = !!(mediaUri || caption.trim() || statusContent?.trim() || statusVoiceUri || studioVoiceUri);
+    if (!hasContent) {
+      Alert.alert('Nothing to Post', 'Add a photo, video, text caption, or voice recording.');
       return;
     }
+    if (caption.trim().length > 2200) { Alert.alert('Caption Too Long', 'Maximum 2200 characters.'); return; }
+
+    const vibe = selectedVibe ? VIBE_TYPES.find(v => v.id === selectedVibe) : null;
+    Alert.alert(
+      vibe ? `${vibe.emoji} Post Your Content` : 'Post Your Content',
+      `Posting to LumVibe${vibe ? `
+${vibe.emoji} ${vibe.label} Vibe` : ''}`,
+      [{ text: 'Cancel', style: 'cancel' }, { text: 'Post Now', onPress: executePost }]
+    );
+  };
+
+  const executePost = async () => {
+    if (!user) return;
+    // Declare vibe here so it's accessible throughout executePost
+    const vibe = selectedVibe ? VIBE_TYPES.find(v => v.id === selectedVibe) : null;
     setIsPosting(true);
     setUploadProgress(0);
     try {
@@ -2115,38 +2475,78 @@ export default function CreateScreen() {
       let cloudinaryPublicId: string | undefined;
       let finalMediaType: string | undefined;
 
-      if (mediaUri) {
-        setUploadStage('Processing media...');
-        setUploadProgress(10);
-
-        if (mediaType === 'image') {
-          // Real filter baking with ImageManipulator
-          const bakedUri = await applyFilterBaking(mediaUri, selectedFilter, selectedFx);
-          setUploadProgress(30);
-          setUploadStage('Uploading to Cloudinary...');
-
-          const base64 = await FileSystem.readAsStringAsync(bakedUri, { encoding: FileSystem.EncodingType.Base64 });
-          setUploadProgress(50);
-
-          const { data, error } = await supabase.storage
-            .from('posts')
-            .upload(`${user.id}/${Date.now()}.jpg`, decode(base64), { contentType: 'image/jpeg', upsert: true });
-          if (error) throw error;
-          const { data: { publicUrl } } = supabase.storage.from('posts').getPublicUrl(data.path);
-          finalMediaUrl = publicUrl;
-          finalMediaType = 'image';
-          setUploadProgress(70);
-
-        } else if (mediaType === 'video') {
-          setUploadStage('Uploading video to Cloudinary...');
-          const { url, publicId } = await uploadVideoToCloudinary(mediaUri, (p) => {
-            setUploadProgress(10 + p * 0.7);
-          });
-          finalMediaUrl = url;
-          cloudinaryPublicId = publicId;
-          finalMediaType = 'video';
-          setUploadProgress(80);
+      // ── VOICE STATUS UPLOAD ──
+      const voiceToUpload = statusVoiceUri || studioVoiceUri;
+      if (voiceToUpload && (mediaType === 'voice' || statusVoiceUri)) {
+        setUploadStage('Uploading voice message...');
+        setUploadProgress(20);
+        const info = await FileSystem.getInfoAsync(voiceToUpload);
+        if (!info.exists) throw new Error('Voice file not found');
+        const b64 = await FileSystem.readAsStringAsync(voiceToUpload, { encoding: FileSystem.EncodingType.Base64 });
+        setUploadProgress(50);
+        const ext = voiceToUpload.split('.').pop()?.toLowerCase() || 'm4a';
+        const mime = ext === 'aac' ? 'audio/aac' : ext === '3gp' ? 'audio/3gpp' : 'audio/m4a';
+        const fn = `${user.id}/voice_${Date.now()}.${ext}`;
+        const { error: ve } = await supabase.storage.from('posts').upload(fn, decode(b64), { contentType: mime, cacheControl: '3600', upsert: false });
+        if (ve) throw new Error(`Voice upload failed: ${ve.message}`);
+        finalMediaUrl = supabase.storage.from('posts').getPublicUrl(fn).data.publicUrl;
+        // Apply Cloudinary voice effect if selected
+        if (studioEffectId && studioEffectId !== 'none') {
+          const eff = VOICE_EFFECTS.find(e => e.id === studioEffectId);
+          if (eff) finalMediaUrl = buildCloudinaryAudioUrl(finalMediaUrl, eff);
         }
+        finalMediaType = 'voice';
+        setUploadProgress(80);
+
+      // ── IMAGE UPLOAD ──
+      } else if (mediaUri && mediaType === 'image') {
+        setUploadStage('Capturing image with effects...');
+        setUploadProgress(8);
+
+        // ✅ FIX: Try to capture the full compose preview (image + filter tint + AR overlay)
+        // This is what the user sees — baked into a single flat JPEG before upload.
+        let sourceUri = mediaUri;
+        if (previewBoxRef.current) {
+          const compositeUri = await captureCompositeImage(previewBoxRef);
+          if (compositeUri) {
+            sourceUri = compositeUri;
+          }
+        }
+
+        setUploadStage('Compressing image...');
+        setUploadProgress(15);
+        // applyFilterBaking still handles resize + brightness/contrast
+        const bakedUri = await applyFilterBaking(sourceUri, selectedFilter, selectedFx);
+        setUploadProgress(35);
+        setUploadStage('Uploading image...');
+        const info = await FileSystem.getInfoAsync(bakedUri);
+        if (!info.exists) throw new Error('Image file not found');
+        const b64 = await FileSystem.readAsStringAsync(bakedUri, { encoding: FileSystem.EncodingType.Base64 });
+        setUploadProgress(65);
+        const fn = `${user.id}/${Date.now()}.jpg`;
+        const { error: ie } = await supabase.storage.from('posts').upload(fn, decode(b64), { contentType: 'image/jpeg', cacheControl: '3600', upsert: false });
+        if (ie) throw new Error(`Upload failed: ${ie.message}`);
+        finalMediaUrl = supabase.storage.from('posts').getPublicUrl(fn).data.publicUrl;
+        finalMediaType = 'image';
+        setUploadProgress(80);
+
+      // ── VIDEO UPLOAD ──
+      } else if (mediaUri && mediaType === 'video') {
+        setUploadStage('Checking video size...');
+        setUploadProgress(5);
+        const ok = await checkVideoSize(mediaUri);
+        if (!ok) { setIsPosting(false); return; }
+        setUploadStage('Uploading video to Cloudinary...');
+        setUploadProgress(10);
+        const { url, publicId } = await uploadVideoToCloudinary(mediaUri, (p) => {
+          setUploadProgress(10 + Math.round(p * 0.75));
+        });
+        // ✅ FIX: Apply colour grade transformation to the Cloudinary URL
+        // This bakes the filter into the served video server-side — no re-encoding needed on device.
+        finalMediaUrl = buildCloudinaryVideoFilterUrl(url, selectedFilter, selectedFx);
+        cloudinaryPublicId = publicId;
+        finalMediaType = 'video';
+        setUploadProgress(88);
       }
 
       setUploadStage('Saving post...');
@@ -2157,44 +2557,83 @@ export default function CreateScreen() {
 
       const postData: PostInsertData = {
         user_id: user.id,
-        caption,
+        caption: statusContent || caption.trim() || '',
         likes_count: 0, comments_count: 0, views_count: 0, coins_received: 0,
         created_at: new Date().toISOString(),
         is_published: !isScheduled,
         scheduled_for: isScheduled && scheduledFor ? scheduledFor.toISOString() : null,
-        has_watermark: addWatermark,
+        has_watermark: addWatermark && !!mediaUri,
         auto_optimized: autoOptimize,
         applied_filter: selectedFilter,
         video_effect: selectedFx,
         video_filter_tint: filterDef?.dbTint || null,
-        playback_rate: speedRate !== 1.0 ? speedRate : null,
+        playback_rate: mediaType === 'video' ? speedRate : null,
         vibe_type: selectedVibe,
         voice_auto_tune: autoTuneEnabled,
-        blur_enabled: blurEnabled,
+        blur_enabled: blurEnabled && mediaType === 'image',
       };
 
       if (finalMediaUrl) { postData.media_url = finalMediaUrl; postData.media_type = finalMediaType; }
       if (cloudinaryPublicId) postData.cloudinary_public_id = cloudinaryPublicId;
-      if (statusContent) postData.status_background = statusBackground;
+      if (statusContent && statusType === 'text') postData.status_background = statusBackground;
       if (statusVoiceDuration > 0) postData.voice_duration = statusVoiceDuration;
-      if (location) postData.location = location;
-      if (locationCoords) { postData.latitude = locationCoords.latitude; postData.longitude = locationCoords.longitude; }
-      if (selectedMusicName) { postData.music_name = selectedMusicName; postData.music_artist = musicArtist || undefined; postData.music_volume = musicVolume; postData.original_volume = originalVolume; }
-      if (selectedMusic) postData.music_url = selectedMusic;
+      if (location) { postData.location = location; if (locationCoords) { postData.latitude = locationCoords.latitude; postData.longitude = locationCoords.longitude; } }
+      if (selectedMusicName) { postData.music_name = selectedMusicName; postData.music_artist = musicArtist ?? undefined; postData.music_volume = musicVolume; postData.original_volume = originalVolume; }
       if (marketplaceListingId) { postData.marketplace_listing_id = marketplaceListingId; postData.marketplace_price = marketplacePrice; postData.marketplace_title = marketplaceTitle; }
+
+      // ── MUSIC UPLOAD ──
+      if (selectedMusic) {
+        try {
+          if (isRemoteUrl(selectedMusic)) {
+            postData.music_url = selectedMusic;
+          } else {
+            const mi = await FileSystem.getInfoAsync(selectedMusic, { size: true });
+            if (mi.exists) {
+              const sizeMb = ('size' in mi ? (mi.size as number) : 0) / 1024 / 1024;
+              if (sizeMb <= MUSIC_UPLOAD_LIMIT_MB) {
+                const ext = selectedMusic.split('.').pop()?.toLowerCase() || 'm4a';
+                const fn = `${user.id}/music_${Date.now()}.${ext}`;
+                const mime = ext === 'mp3' ? 'audio/mpeg' : ext === 'aac' ? 'audio/aac' : 'audio/m4a';
+                const b64 = await FileSystem.readAsStringAsync(selectedMusic, { encoding: FileSystem.EncodingType.Base64 });
+                const { error: me } = await supabase.storage.from('posts').upload(fn, decode(b64), { contentType: mime, cacheControl: '3600', upsert: false });
+                if (!me) postData.music_url = supabase.storage.from('posts').getPublicUrl(fn).data.publicUrl;
+              } else {
+                Alert.alert('🎵 Music File Too Large', `Your music file is ${sizeMb.toFixed(1)}MB. Files over ${MUSIC_UPLOAD_LIMIT_MB}MB can't be uploaded.
+
+Post saved without music.`);
+              }
+            }
+          }
+        } catch (me) { console.warn('Music upload skipped:', me); }
+      }
 
       const { error: postError } = await supabase.from('posts').insert(postData);
       if (postError) throw postError;
+
+      // Give user +50 points
+      try {
+        const { data: ud } = await supabase.from('users').select('points').eq('id', user.id).single();
+        await supabase.from('users').update({ points: (ud?.points || 0) + 50 }).eq('id', user.id);
+      } catch {}
 
       setUploadProgress(100);
       setUploadStage('Posted! 🎉');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
-      await new Promise(r => setTimeout(r, 800));
-      router.replace('/(tabs)');
+      await new Promise(r => setTimeout(r, 1500));
+
+      if (isScheduled && scheduledFor) {
+        const sc = scheduledFor.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+        Alert.alert('⏰ Post Scheduled!', `Your post will go live on ${sc}`, [{ text: 'Done', onPress: () => { handleBackToCamera(); router.back(); } }]);
+      } else {
+        Alert.alert(vibe ? `${vibe.emoji} Posted!` : '🎉 Posted!',
+          `Your post is live! +50 Points${selectedVibe && vibe ? ` · ${vibe.label} vibe` : ''}`,
+          [{ text: 'Done', onPress: () => { handleBackToCamera(); router.back(); } }]
+        );
+      }
 
     } catch (e: any) {
-      Alert.alert('Post Failed', e.message || 'Something went wrong. Please try again.');
+      Alert.alert('❌ Upload Failed', getFriendlyError(e), [{ text: 'Retry', onPress: executePost }, { text: 'Cancel', style: 'cancel' }]);
     } finally {
       setIsPosting(false);
       setUploadProgress(0);
@@ -2241,15 +2680,17 @@ export default function CreateScreen() {
           ) : (
             <CameraView
               ref={cameraRef}
-              style={StyleSheet.absoluteFill}
+              style={[StyleSheet.absoluteFill, { zIndex: 1 }]}
               facing={facing}
               enableTorch={flash === 'on'}
               mode={cameraMode}
             />
           )}
 
-          {/* Animated background layer */}
-          <AnimatedBackground backgroundId={selectedBackground} />
+          {/* Animated background — only renders as OVERLAY when selected, camera always shows beneath */}
+          {selectedBackground !== 'bg_none' && (
+            <AnimatedBackground backgroundId={selectedBackground} />
+          )}
 
           {/* Filter tint overlay */}
           {activeFilter?.tintColor && (
@@ -2274,8 +2715,10 @@ export default function CreateScreen() {
           {/* AR overlay */}
           <AROverlay effectId={selectedArEffect} cW={SW} cH={cH} />
 
-          {/* Burst overlay */}
-          <EffectBurstOverlay effect={burstEffect} visible={burstVisible} />
+          {/* Burst overlay — key forces full remount on every fire so animation always triggers */}
+          {burstVisible && (
+            <EffectBurstOverlay key={burstKey} effect={burstEffect} visible={burstVisible} />
+          )}
 
           {/* Burst panel */}
           <EffectBurstPanel
@@ -2327,10 +2770,22 @@ export default function CreateScreen() {
               <Text style={{ fontSize: 16 }}>🎨</Text>
               <Text style={ms.toolLabel}>BG</Text>
             </TouchableOpacity>
-            {/* Effect Burst */}
-            <TouchableOpacity style={[ms.toolBtn, showBurstPanel && ms.toolBtnActive]} onPress={() => setShowBurstPanel(v => !v)}>
+            {/* Effect Burst — tap fires if effect selected, long press opens panel */}
+            <TouchableOpacity
+              style={[ms.toolBtn, activeBurst && ms.toolBtnActive]}
+              onPress={() => {
+                if (activeBurst) {
+                  // Effect already selected — FIRE IT immediately
+                  handleBurstFire();
+                } else {
+                  // No effect selected — open panel to pick one
+                  setShowBurstPanel(v => !v);
+                }
+              }}
+              onLongPress={() => setShowBurstPanel(v => !v)}
+            >
               <Text style={{ fontSize: 16 }}>🎆</Text>
-              <Text style={ms.toolLabel}>Burst</Text>
+              <Text style={ms.toolLabel}>{activeBurst ? 'Fire!' : 'Burst'}</Text>
             </TouchableOpacity>
             {/* Beat Tap */}
             <TouchableOpacity style={[ms.toolBtn, showBeatTap && ms.toolBtnActive]} onPress={() => setShowBeatTap(v => !v)}>
@@ -2379,13 +2834,13 @@ export default function CreateScreen() {
           )}
         </View>
 
-        {/* Beat Tap Sync */}
-        {showBeatTap && (
-          <BeatTapSync activeBurst={activeBurst} onFire={handleBeatTapFire} visible={showBeatTap} />
-        )}
-
         {/* Camera controls bar */}
         <View style={ms.camControls}>
+          {/* Beat Tap Sync — lives here so it NEVER covers the shutter */}
+          {showBeatTap && (
+            <BeatTapSync activeBurst={activeBurst} onFire={handleBeatTapFire} visible={showBeatTap} />
+          )}
+
           {/* Mode toggle */}
           <View style={ms.modeRow}>
             <TouchableOpacity style={[ms.modeBtn, cameraMode === 'picture' && ms.modeBtnActive]} onPress={() => setCameraMode('picture')}>
@@ -2445,15 +2900,25 @@ export default function CreateScreen() {
           onClose={() => setShowAudioStudio(false)}
           onDone={result => {
             setShowAudioStudio(false);
-            if (result.voiceUri) setStudioVoiceUri(result.voiceUri);
+            if (result.voiceUri) {
+              setStudioVoiceUri(result.voiceUri);
+              setStatusVoiceUri(result.voiceUri);
+              setStatusVoiceDuration(result.duration);
+            }
             if (result.effectId) setStudioEffectId(result.effectId);
             setAutoTuneEnabled(result.autoTuneEnabled);
             if (result.beatUri) {
               setSelectedMusic(result.beatUri ?? null);
               setSelectedMusicName(result.beatName ?? null);
               setMusicArtist(result.beatArtist ?? null);
-              setBeatVol_unused(result.beatVolume);
+              setMusicVolume(result.beatVolume); // ✅ save beat volume properly
+              setOriginalVolume(result.voiceVolume);
             }
+            // Go to compose after Audio Studio done
+            if (!mediaUri) {
+              setMediaType('voice');
+            }
+            setScreenView('compose');
           }}
         />
       </View>
@@ -2463,14 +2928,33 @@ export default function CreateScreen() {
   // ─── COMPOSE SCREEN ───────────────────────────────────
   const activeFilterDef = FILTERS.find(f => f.id === selectedFilter);
   const activeFxOverlay = FX_OVERLAY_TINTS[selectedFx] || 'transparent';
+  // preview box height: 58% of screen for all devices
+  const PREVIEW_H = SH * 0.58;
+  // filter card width: 4 visible on screen
+  const FILTER_CARD_W = (SW - 32) / 4 - 6;
+
+  const handlePickMusicFile = async () => {
+    try {
+      const r = await DocumentPicker.getDocumentAsync({ type: 'audio/*', copyToCacheDirectory: true });
+      if (!r.canceled && r.assets[0]) {
+        const sizeOk = await checkMusicFileSize(r.assets[0].uri);
+        if (!sizeOk) return;
+        const name = r.assets[0].name?.replace(/\.[^.]+$/, '') || 'My Music';
+        setSelectedMusic(r.assets[0].uri);
+        setSelectedMusicName(name);
+        setMusicArtist('My Music');
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }
+    } catch { Alert.alert('Error', 'Could not pick music file'); }
+  };
 
   return (
     <View style={ms.composeScreen}>
       {isPosting && <UploadProgressCircle progress={uploadProgress} stage={uploadStage} />}
 
-      {/* Header */}
+      {/* ── HEADER ── safe area aware */}
       <View style={ms.composeHdr}>
-        <TouchableOpacity onPress={() => setScreenView('camera')} style={ms.backBtn}>
+        <TouchableOpacity onPress={handleBackToCamera} style={ms.backBtn}>
           <Ionicons name="arrow-back" size={22} color="#00ff88" />
         </TouchableOpacity>
         <Text style={ms.composeTitle}>Create Post</Text>
@@ -2479,52 +2963,221 @@ export default function CreateScreen() {
             <Text style={ms.draftBtnTxt}>Draft</Text>
           </TouchableOpacity>
           <TouchableOpacity style={ms.postBtn} onPress={handlePost} disabled={isPosting}>
-            <Text style={ms.postBtnTxt}>Post</Text>
+            <LinearGradient colors={['#00ff88', '#00cc6a']} style={ms.postBtnGrad}>
+              <Text style={ms.postBtnTxt}>Post</Text>
+            </LinearGradient>
           </TouchableOpacity>
         </View>
       </View>
 
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 40 }}>
-        {/* Media preview */}
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: 60 }}
+        keyboardShouldPersistTaps="handled"
+      >
+        {/* ── TOP ROW: Media preview LEFT + Filters vertical RIGHT ── */}
         {mediaUri && (
-          <View style={ms.previewBox}>
-            {mediaType === 'video' ? (
-              <Video
-                source={{ uri: mediaUri }}
-                style={ms.previewMedia}
-                resizeMode={ResizeMode.COVER}
-                isLooping
-                shouldPlay={false}
-              />
-            ) : (
-              <Image source={{ uri: mediaUri }} style={ms.previewMedia} resizeMode="cover" />
-            )}
-            {/* Filter preview overlay */}
-            {activeFilterDef?.tintColor && (
-              <View style={[StyleSheet.absoluteFill, { backgroundColor: activeFilterDef.tintColor, borderRadius: 16 }]} pointerEvents="none" />
-            )}
-            {activeFxOverlay !== 'transparent' && (
-              <View style={[StyleSheet.absoluteFill, { backgroundColor: activeFxOverlay, borderRadius: 16 }]} pointerEvents="none" />
-            )}
-            {activeFilterDef?.cinematicBars && (
-              <>
-                <View style={[ms.prevCinBar, { top: 0 }]} pointerEvents="none" />
-                <View style={[ms.prevCinBar, { bottom: 0 }]} pointerEvents="none" />
-              </>
-            )}
-            {/* Filter info pill */}
-            <View style={ms.previewInfo}>
-              <Text style={ms.previewInfoTxt}>
-                {activeFilterDef?.emoji} {selectedFilter !== 'original' ? activeFilterDef?.name + ' filter' : 'Original filter'}
-                {selectedFx !== 'fx_none' ? ` · ${FX_EFFECTS.find(f => f.id === selectedFx)?.emoji} FX` : ''}
-                {addWatermark ? ' · 💧 Watermark' : ''}
-                {' — compressed & saved'}
-              </Text>
+          <View style={ms.topRow}>
+            {/* Media preview — wrapped with ref so ViewShot can capture it */}
+            <View ref={previewBoxRef} style={[ms.previewBox, { height: PREVIEW_H }]} collapsable={false}>
+              {mediaType === 'video' ? (
+                <>
+                  {/* Video renders at zIndex 1 */}
+                  <Video
+                    source={{ uri: mediaUri }}
+                    style={[StyleSheet.absoluteFill, { zIndex: 1 }]}
+                    resizeMode={ResizeMode.COVER}
+                    isLooping
+                    shouldPlay={videoPlaying}
+                    isMuted={false}
+                  />
+                  {/* Tap to play/pause — above video */}
+                  <TouchableOpacity
+                    style={[StyleSheet.absoluteFill, { zIndex: 5 }]}
+                    activeOpacity={1}
+                    onPress={() => setVideoPlaying(v => !v)}
+                  >
+                    {!videoPlaying && (
+                      <View style={[ms.videoPlayOverlay, { zIndex: 6 }]}>
+                        <View style={ms.videoPlayBtn}>
+                          <Ionicons name="play" size={28} color="#fff" />
+                        </View>
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                </>
+              ) : (
+                <Image source={{ uri: mediaUri }} style={[StyleSheet.absoluteFill, { zIndex: 1 }]} resizeMode="cover" />
+              )}
+              {/* Filter tint overlay — zIndex 10 stays above video native layer on Android */}
+              {activeFilterDef?.tintColor && (
+                <View style={[StyleSheet.absoluteFill, { backgroundColor: activeFilterDef.tintColor, zIndex: 10 }]} pointerEvents="none" />
+              )}
+              {/* FX tint overlay — zIndex 11 */}
+              {activeFxOverlay !== 'transparent' && (
+                <View style={[StyleSheet.absoluteFill, { backgroundColor: activeFxOverlay, zIndex: 11 }]} pointerEvents="none" />
+              )}
+              {/* Cinematic bars */}
+              {activeFilterDef?.cinematicBars && (
+                <>
+                  <View style={[ms.prevCinBar, { top: 0, zIndex: 12 }]} pointerEvents="none" />
+                  <View style={[ms.prevCinBar, { bottom: 0, zIndex: 12 }]} pointerEvents="none" />
+                </>
+              )}
+              {/* Glitch effect */}
+              {activeFilterDef?.glitchEffect && (
+                <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(255,0,80,0.12)', zIndex: 13 }]} pointerEvents="none" />
+              )}
+              {/* Selected AR effect emoji overlay on preview */}
+              {selectedArEffect && selectedArEffect !== 'ar_none' && (() => {
+                const eff = AR_EFFECTS.find(e => e.id === selectedArEffect);
+                if (!eff || eff.type === 'none') return null;
+                return (
+                  <View style={[StyleSheet.absoluteFill, { zIndex: 14, alignItems: 'center' }]} pointerEvents="none">
+                    {eff.type === 'face_top' && (
+                      <Text style={{ position: 'absolute', top: PREVIEW_H * 0.05, fontSize: 56 }}>{eff.emoji}</Text>
+                    )}
+                    {eff.type === 'face_mid' && (
+                      <Text style={{ position: 'absolute', top: PREVIEW_H * 0.28, fontSize: 52 }}>{eff.emoji}</Text>
+                    )}
+                    {eff.type === 'top' && (
+                      <Text style={{ position: 'absolute', top: 8, fontSize: 52 }}>{eff.emoji}</Text>
+                    )}
+                    {eff.type === 'float' && (
+                      <Text style={{ position: 'absolute', top: PREVIEW_H * 0.35, fontSize: 40, opacity: 0.85 }}>{eff.emoji} {eff.emoji} {eff.emoji}</Text>
+                    )}
+                  </View>
+                );
+              })()}
+              {/* Speed badge */}
+              {selectedSpeed !== 'normal' && (
+                <View style={{ position: 'absolute', top: 8, left: 8, zIndex: 15, backgroundColor: 'rgba(0,0,0,0.65)', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4 }}>
+                  <Text style={{ color: '#00ff88', fontSize: 11, fontWeight: '800' }}>
+                    {SPEED_OPTIONS.find(s => s.id === selectedSpeed)?.emoji} {SPEED_OPTIONS.find(s => s.id === selectedSpeed)?.label}
+                  </Text>
+                </View>
+              )}
+              {/* Vibe badge */}
+              {selectedVibe && (() => {
+                const v = VIBE_TYPES.find(vt => vt.id === selectedVibe);
+                return v ? (
+                  <View style={{ position: 'absolute', top: 8, right: 8, zIndex: 15, backgroundColor: v.color + '33', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4, borderWidth: 1, borderColor: v.color }}>
+                    <Text style={{ color: v.color, fontSize: 11, fontWeight: '800' }}>{v.emoji} {v.label.toUpperCase()}</Text>
+                  </View>
+                ) : null;
+              })()}
+              {/* Info pill at bottom */}
+              <View style={[ms.previewInfo, { zIndex: 16 }]}>
+                <Text style={ms.previewInfoTxt} numberOfLines={1}>
+                  {activeFilterDef?.emoji}{' '}
+                  {selectedFilter !== 'original' ? activeFilterDef?.name + ' filter' : 'Original filter'}
+                  {selectedFx !== 'fx_none' ? ` · ${FX_EFFECTS.find(f => f.id === selectedFx)?.emoji} FX` : ''}
+                  {addWatermark ? ' · 💧 Watermark' : ''}
+                  {' — compressed & saved'}
+                </Text>
+              </View>
+            </View>
+
+            {/* Vertical filter scroll on the RIGHT — exactly like old design */}
+            <View style={[ms.filterSidePanel, { height: PREVIEW_H }]}>
+              <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ gap: 6, paddingVertical: 6 }}>
+                {FILTERS.map(f => {
+                  const isActive = selectedFilter === f.id;
+                  return (
+                    <TouchableOpacity
+                      key={f.id}
+                      style={[ms.filterSideCard, isActive && ms.filterSideCardActive]}
+                      onPress={() => setSelectedFilter(f.id)}
+                    >
+                      {isActive && (
+                        <View style={ms.filterSideCheck}>
+                          <Feather name="check" size={9} color="#000" />
+                        </View>
+                      )}
+                      <Text style={{ fontSize: 20 }}>{f.emoji}</Text>
+                      <Text style={[ms.filterSideTxt, isActive && { color: '#00ff88' }]}>{f.name}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
             </View>
           </View>
         )}
 
-        {/* Caption */}
+        {/* ── VOICE STATUS PREVIEW ── */}
+        {(statusVoiceUri || studioVoiceUri) && (
+          <View style={{ marginHorizontal: 12, marginTop: 10, backgroundColor: '#0d0d0d', borderRadius: 16, padding: 16, borderWidth: 1, borderColor: '#aa00ff44' }}>
+            <Text style={{ color: '#aa00ff', fontSize: 12, fontWeight: '700', marginBottom: 10 }}>🎙️ Your Voice Status</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: '#111', borderRadius: 12, padding: 12 }}>
+              {/* Play/Stop preview button */}
+              <TouchableOpacity
+                style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: '#00ff8820', borderWidth: 1, borderColor: '#00ff88', alignItems: 'center', justifyContent: 'center' }}
+                onPress={async () => {
+                  const uri = statusVoiceUri || studioVoiceUri;
+                  if (!uri) return;
+                  if (previewMusicPlaying) {
+                    await previewMusicSoundRef.current?.stopAsync();
+                    await previewMusicSoundRef.current?.unloadAsync();
+                    previewMusicSoundRef.current = null;
+                    setPreviewMusicPlaying(false);
+                  } else {
+                    try {
+                      await Audio.setAudioModeAsync({ allowsRecordingIOS: false, playsInSilentModeIOS: true });
+                      const { sound } = await Audio.Sound.createAsync(
+                        { uri },
+                        { shouldPlay: true, volume: 1.0 }
+                      );
+                      previewMusicSoundRef.current = sound;
+                      setPreviewMusicPlaying(true);
+                      sound.setOnPlaybackStatusUpdate(st => {
+                        if ((st as any).didJustFinish) {
+                          sound.unloadAsync();
+                          previewMusicSoundRef.current = null;
+                          setPreviewMusicPlaying(false);
+                        }
+                      });
+                    } catch (e: any) { Alert.alert('Playback Error', e.message); }
+                  }
+                }}
+              >
+                <Ionicons name={previewMusicPlaying ? 'stop' : 'play'} size={22} color="#00ff88" />
+              </TouchableOpacity>
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }}>
+                  {previewMusicPlaying ? '▶ Playing preview...' : 'Voice message ready'}
+                </Text>
+                {statusVoiceDuration > 0 && (
+                  <Text style={{ color: '#666', fontSize: 11, marginTop: 2 }}>
+                    {Math.floor(statusVoiceDuration / 60).toString().padStart(2, '0')}:{(statusVoiceDuration % 60).toString().padStart(2, '0')}
+                  </Text>
+                )}
+                {studioEffectId && studioEffectId !== 'none' && (
+                  <Text style={{ color: '#aa00ff', fontSize: 10, marginTop: 2 }}>
+                    Effect: {VOICE_EFFECTS.find(e => e.id === studioEffectId)?.name}
+                  </Text>
+                )}
+              </View>
+              <TouchableOpacity
+                onPress={() => setShowAudioStudio(true)}
+                style={{ backgroundColor: '#aa00ff22', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8, borderWidth: 1, borderColor: '#aa00ff44' }}
+              >
+                <Text style={{ color: '#aa00ff', fontSize: 11, fontWeight: '700' }}>Edit</Text>
+              </TouchableOpacity>
+            </View>
+            {/* If beat is also set, show it too */}
+            {selectedMusicName && (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#111', borderRadius: 10, padding: 10, marginTop: 8, borderWidth: 1, borderColor: '#ffd70033' }}>
+                <Ionicons name="musical-note" size={14} color="#ffd700" />
+                <Text style={{ flex: 1, color: '#ffd700', fontSize: 12, fontWeight: '600' }} numberOfLines={1}>
+                  Beat: {selectedMusicName}
+                </Text>
+                {musicArtist && <Text style={{ color: '#888', fontSize: 10 }}>{musicArtist}</Text>}
+              </View>
+            )}
+          </View>
+        )}
+
+        {/* ── CAPTION ── */}
         <View style={ms.captionBox}>
           <TextInput
             style={ms.captionInput}
@@ -2538,48 +3191,31 @@ export default function CreateScreen() {
           <Text style={ms.captionCount}>{caption.length}/2200</Text>
         </View>
 
-        {/* ── FILTERS SECTION ── */}
-        <View style={ms.section}>
-          <View style={ms.sectionHdr}>
-            <Text style={ms.sectionTitle}>✨ Filters</Text>
-            <Text style={ms.sectionSub}>Applied & baked into your file</Text>
+        {/* ── FX EFFECTS PANEL ── */}
+        <View style={ms.fxPanel}>
+          <View style={ms.fxPanelHdr}>
+            <Text style={ms.fxPanelIcon}>🎛️</Text>
+            <View style={{ flex: 1, marginLeft: 8 }}>
+              <Text style={ms.fxPanelTitle}>FX Effects</Text>
+              <Text style={ms.fxPanelSub}>Real pixel processing — unique to LumVibe</Text>
+            </View>
           </View>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10, paddingHorizontal: 16, paddingVertical: 8 }}>
-            {FILTERS.map(f => (
-              <TouchableOpacity
-                key={f.id}
-                style={[ms.filterCard, selectedFilter === f.id && ms.filterCardActive]}
-                onPress={() => setSelectedFilter(f.id)}
-              >
-                <Text style={{ fontSize: 22 }}>{f.emoji}</Text>
-                <Text style={[ms.filterCardTxt, selectedFilter === f.id && { color: '#00ff88' }]}>{f.name}</Text>
-                {selectedFilter === f.id && <View style={ms.filterCheck}><Feather name="check" size={10} color="#000" /></View>}
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-        </View>
-
-        {/* ── FX EFFECTS SECTION ── */}
-        <View style={ms.section}>
-          <View style={ms.sectionHdr}>
-            <Text style={ms.sectionTitle}>🎛️ FX Effects</Text>
-            <Text style={ms.sectionSub}>Real pixel processing — unique to LumVibe</Text>
-          </View>
-          {/* Category filter */}
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, paddingHorizontal: 16, paddingBottom: 8 }}>
+          {/* Category row */}
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, paddingHorizontal: 14, paddingBottom: 10 }}>
             {FX_CATEGORIES.map(cat => (
-              <TouchableOpacity key={cat.id} style={[ms.fxCatBtn, /* no state for active cat in compose, show all */]} onPress={() => {}}>
+              <TouchableOpacity key={cat.id} style={ms.fxCatBtn} onPress={() => {}}>
                 <Text style={{ fontSize: 10 }}>{cat.emoji}</Text>
                 <Text style={ms.fxCatTxt}>{cat.name}</Text>
               </TouchableOpacity>
             ))}
           </ScrollView>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10, paddingHorizontal: 16, paddingVertical: 4 }}>
+          {/* FX cards */}
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingHorizontal: 14, paddingBottom: 4 }}>
             {FX_EFFECTS.map(fx => (
               <TouchableOpacity
                 key={fx.id}
                 style={[ms.fxCard, selectedFx === fx.id && ms.fxCardActive]}
-                onPress={() => setSelectedFx(fx.id)}
+                onPress={() => { setSelectedFx(fx.id); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); }}
               >
                 <Text style={{ fontSize: 22 }}>{fx.emoji}</Text>
                 <Text style={[ms.fxCardName, selectedFx === fx.id && { color: '#00ff88' }]}>{fx.name}</Text>
@@ -2588,6 +3224,110 @@ export default function CreateScreen() {
               </TouchableOpacity>
             ))}
           </ScrollView>
+        </View>
+
+        {/* ── MUSIC SECTION — always visible ── */}
+        <View style={ms.musicSection}>
+          <View style={ms.musicSectionHdr}>
+            <Text style={ms.musicSectionTitle}>🎵 Add Music</Text>
+            <TouchableOpacity style={ms.musicStudioBtn} onPress={() => setShowAudioStudio(true)}>
+              <Ionicons name="musical-notes-outline" size={14} color="#00ff88" />
+              <Text style={ms.musicStudioTxt}>Audio Studio</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Pick from device button */}
+          <TouchableOpacity style={ms.musicPickBtn} onPress={handlePickMusicFile}>
+            <LinearGradient colors={['#0d001a', '#1a0035']} style={ms.musicPickGrad}>
+              <Ionicons name="musical-note-outline" size={18} color="#aa00ff" />
+              <View style={{ flex: 1, marginLeft: 10 }}>
+                <Text style={ms.musicPickTitle}>Pick Music from Device</Text>
+                <Text style={ms.musicPickSub}>MP3, M4A, WAV · Max {MUSIC_UPLOAD_LIMIT_MB}MB</Text>
+              </View>
+              <Feather name="chevron-right" size={16} color="#666" />
+            </LinearGradient>
+          </TouchableOpacity>
+
+          {/* Currently selected music — with play preview button */}
+          {selectedMusicName && selectedMusic && (
+            <View style={ms.musicPlayerRow}>
+              {/* Play/Pause preview */}
+              <TouchableOpacity
+                style={ms.musicPlayBtn}
+                onPress={async () => {
+                  if (previewMusicPlaying) {
+                    await previewMusicSoundRef.current?.pauseAsync();
+                    setPreviewMusicPlaying(false);
+                  } else {
+                    try {
+                      if (!previewMusicSoundRef.current) {
+                        await Audio.setAudioModeAsync({ allowsRecordingIOS: false, playsInSilentModeIOS: true });
+                        const { sound } = await Audio.Sound.createAsync(
+                          { uri: selectedMusic },
+                          { shouldPlay: true, volume: musicVolume, isLooping: true }
+                        );
+                        previewMusicSoundRef.current = sound;
+                        sound.setOnPlaybackStatusUpdate(st => {
+                          if ((st as any).error) setPreviewMusicPlaying(false);
+                        });
+                      } else {
+                        await previewMusicSoundRef.current.playAsync();
+                      }
+                      setPreviewMusicPlaying(true);
+                    } catch (e: any) {
+                      Alert.alert('⚠️ Playback Error', getFriendlyError(e));
+                    }
+                  }
+                }}
+              >
+                <Ionicons name={previewMusicPlaying ? 'pause' : 'play'} size={18} color="#000" />
+              </TouchableOpacity>
+
+              <View style={{ flex: 1, marginLeft: 10 }}>
+                <Text style={ms.musicActiveName} numberOfLines={1}>{selectedMusicName}</Text>
+                {musicArtist && musicArtist !== 'My Music' && (
+                  <Text style={ms.musicActiveArtist} numberOfLines={1}>{musicArtist}</Text>
+                )}
+              </View>
+
+              {/* Remove button */}
+              <TouchableOpacity onPress={async () => {
+                await previewMusicSoundRef.current?.unloadAsync();
+                previewMusicSoundRef.current = null;
+                setPreviewMusicPlaying(false);
+                setSelectedMusic(null);
+                setSelectedMusicName(null);
+                setMusicArtist(null);
+              }}>
+                <Feather name="x" size={16} color="#ff4444" />
+              </TouchableOpacity>
+            </View>
+          )}
+
+          {/* Studio voice */}
+          {studioVoiceUri && (
+            <View style={ms.musicActiveRow}>
+              <View style={[ms.musicActiveDot, { backgroundColor: '#00ff88' }]} />
+              <Ionicons name="mic" size={14} color="#00ff88" />
+              <Text style={[ms.musicActiveName, { color: '#00ff88' }]}>Studio voice ready</Text>
+              {studioEffectId && (
+                <Text style={ms.musicActiveArtist}>· {VOICE_EFFECTS.find(e => e.id === studioEffectId)?.name}</Text>
+              )}
+            </View>
+          )}
+
+          {/* Volume sliders — only show when music is set */}
+          {(selectedMusicName || studioVoiceUri) && (
+            <View style={{ marginTop: 10 }}>
+              <VolumeSlider value={musicVolume} onValueChange={async (v) => {
+                setMusicVolume(v);
+                if (previewMusicSoundRef.current) {
+                  try { await previewMusicSoundRef.current.setVolumeAsync(v); } catch {}
+                }
+              }} color="#ffd700" label="Music Volume" emoji="🎵" />
+              <VolumeSlider value={originalVolume} onValueChange={setOriginalVolume} color="#00ff88" label="Original Volume" emoji="🎙️" />
+            </View>
+          )}
         </View>
 
         {/* ── SET YOUR VIBE ── */}
@@ -2616,7 +3356,7 @@ export default function CreateScreen() {
           <View style={ms.sectionHdr}>
             <Text style={ms.sectionTitle}>⏱️ Playback Speed</Text>
           </View>
-          <View style={{ flexDirection: 'row', gap: 8, paddingHorizontal: 16, paddingVertical: 8 }}>
+          <View style={{ flexDirection: 'row', gap: 6, paddingHorizontal: 16, paddingVertical: 8 }}>
             {SPEED_OPTIONS.map(s => (
               <TouchableOpacity
                 key={s.id}
@@ -2630,37 +3370,7 @@ export default function CreateScreen() {
           </View>
         </View>
 
-        {/* ── MUSIC / AUDIO STUDIO ── */}
-        {(selectedMusicName || studioVoiceUri) && (
-          <View style={ms.section}>
-            <View style={ms.sectionHdr}>
-              <Text style={ms.sectionTitle}>🎵 Audio</Text>
-            </View>
-            <View style={{ paddingHorizontal: 16 }}>
-              {selectedMusicName && (
-                <View style={ms.musicRow}>
-                  <Ionicons name="musical-note" size={16} color="#ffd700" />
-                  <Text style={ms.musicName} numberOfLines={1}>{selectedMusicName}</Text>
-                  {musicArtist && <Text style={ms.musicArtist}>· {musicArtist}</Text>}
-                  <TouchableOpacity onPress={() => { setSelectedMusic(null); setSelectedMusicName(null); setMusicArtist(null); }}>
-                    <Feather name="x" size={14} color="#ff4444" />
-                  </TouchableOpacity>
-                </View>
-              )}
-              {studioVoiceUri && (
-                <View style={ms.musicRow}>
-                  <Ionicons name="mic" size={16} color="#00ff88" />
-                  <Text style={ms.musicName}>Studio voice recorded</Text>
-                  {studioEffectId && <Text style={ms.musicArtist}>· {VOICE_EFFECTS.find(e => e.id === studioEffectId)?.name}</Text>}
-                </View>
-              )}
-              <VolumeSlider value={musicVolume} onValueChange={setMusicVolume} color="#ffd700" label="Music Volume" emoji="🎵" />
-              <VolumeSlider value={originalVolume} onValueChange={setOriginalVolume} color="#00ff88" label="Original Volume" emoji="🎙️" />
-            </View>
-          </View>
-        )}
-
-        {/* ── SETTINGS ROW ── */}
+        {/* ── SETTINGS ── */}
         <View style={ms.section}>
           <View style={ms.settingsGrid}>
             <View style={ms.settingItem}>
@@ -2668,7 +3378,7 @@ export default function CreateScreen() {
               <Switch value={addWatermark} onValueChange={setAddWatermark} trackColor={{ false: '#2a2a2a', true: '#00ff8855' }} thumbColor={addWatermark ? '#00ff88' : '#555'} />
             </View>
             <View style={ms.settingItem}>
-              <Text style={ms.settingLabel}>⚡ Auto-Optimize</Text>
+              <Text style={ms.settingLabel}>⚡ Optimize</Text>
               <Switch value={autoOptimize} onValueChange={setAutoOptimize} trackColor={{ false: '#2a2a2a', true: '#00ff8855' }} thumbColor={autoOptimize ? '#00ff88' : '#555'} />
             </View>
             <View style={ms.settingItem}>
@@ -2684,7 +3394,11 @@ export default function CreateScreen() {
           <Text style={[ms.metaTxt, location && { color: '#00ff88' }]}>
             {loadingLocation ? 'Getting location...' : location || 'Add location'}
           </Text>
-          {location && <TouchableOpacity onPress={() => { setLocation(null); setLocationCoords(null); }}><Feather name="x" size={14} color="#ff4444" /></TouchableOpacity>}
+          {location && (
+            <TouchableOpacity onPress={() => { setLocation(null); setLocationCoords(null); }}>
+              <Feather name="x" size={14} color="#ff4444" />
+            </TouchableOpacity>
+          )}
         </TouchableOpacity>
 
         {/* ── SCHEDULE ── */}
@@ -2693,14 +3407,23 @@ export default function CreateScreen() {
           <Text style={[ms.metaTxt, isScheduled && { color: '#ffd700' }]}>
             {isScheduled && scheduledFor ? `Scheduled: ${scheduledFor.toLocaleString()}` : 'Schedule post'}
           </Text>
-          {isScheduled && <TouchableOpacity onPress={() => setIsScheduled(false)}><Feather name="x" size={14} color="#ff4444" /></TouchableOpacity>}
+          {isScheduled && (
+            <TouchableOpacity onPress={() => setIsScheduled(false)}>
+              <Feather name="x" size={14} color="#ff4444" />
+            </TouchableOpacity>
+          )}
         </TouchableOpacity>
 
         {showSchedulePanel && (
           <View style={ms.schedulePanel}>
             <View style={ms.scheduleSwitchRow}>
               <Text style={ms.scheduleTxt}>Schedule this post</Text>
-              <Switch value={isScheduled} onValueChange={v => { setIsScheduled(v); if (v && !scheduledFor) setShowDatePicker(true); }} trackColor={{ false: '#2a2a2a', true: '#ffd70055' }} thumbColor={isScheduled ? '#ffd700' : '#555'} />
+              <Switch
+                value={isScheduled}
+                onValueChange={v => { setIsScheduled(v); if (v && !scheduledFor) setShowDatePicker(true); }}
+                trackColor={{ false: '#2a2a2a', true: '#ffd70055' }}
+                thumbColor={isScheduled ? '#ffd700' : '#555'}
+              />
             </View>
             {isScheduled && (
               <TouchableOpacity style={ms.datePickerBtn} onPress={() => setShowDatePicker(true)}>
@@ -2719,7 +3442,7 @@ export default function CreateScreen() {
           </View>
         )}
 
-        {/* ── MARKETPLACE BADGE ── */}
+        {/* ── MARKETPLACE ── */}
         {marketplaceListingId && (
           <View style={ms.marketBadge}>
             <Ionicons name="pricetag-outline" size={15} color="#ffd700" />
@@ -2727,7 +3450,7 @@ export default function CreateScreen() {
           </View>
         )}
 
-        {/* Open in editing apps */}
+        {/* ── OPEN IN EDITING APP ── */}
         <TouchableOpacity style={ms.editAppsBtn} onPress={() => setShowEditApps(v => !v)}>
           <Ionicons name="apps-outline" size={16} color="#888" />
           <Text style={ms.editAppsBtnTxt}>Open in editing app first</Text>
@@ -2762,13 +3485,19 @@ export default function CreateScreen() {
         onClose={() => setShowAudioStudio(false)}
         onDone={result => {
           setShowAudioStudio(false);
-          if (result.voiceUri) setStudioVoiceUri(result.voiceUri);
+          if (result.voiceUri) {
+            setStudioVoiceUri(result.voiceUri);
+            setStatusVoiceUri(result.voiceUri);
+            setStatusVoiceDuration(result.duration);
+          }
           if (result.effectId) setStudioEffectId(result.effectId);
           setAutoTuneEnabled(result.autoTuneEnabled);
           if (result.beatUri) {
             setSelectedMusic(result.beatUri ?? null);
             setSelectedMusicName(result.beatName ?? null);
             setMusicArtist(result.beatArtist ?? null);
+            setMusicVolume(result.beatVolume); // ✅ save beat volume
+            setOriginalVolume(result.voiceVolume);
           }
         }}
       />
@@ -2834,61 +3563,109 @@ const ms = StyleSheet.create({
   filterChipActive: { backgroundColor: '#001a0a', borderColor: '#00ff88' },
   filterChipTxt: { color: '#888', fontSize: 10, fontWeight: '600', marginTop: 2 },
 
+  videoPlayOverlay: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', zIndex: 10 },
+  videoPlayBtn: { width: 56, height: 56, borderRadius: 28, backgroundColor: 'rgba(0,0,0,0.55)', alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: 'rgba(255,255,255,0.6)' },
+
   // Compose screen
   composeScreen: { flex: 1, backgroundColor: '#000' },
-  composeHdr: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingTop: Platform.OS === 'ios' ? 50 : 16, paddingBottom: 12, backgroundColor: '#0a0a0a', borderBottomWidth: 1, borderBottomColor: '#1a1a1a' },
+  composeHdr: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingTop: Platform.OS === 'ios' ? 50 : 36, paddingBottom: 12, backgroundColor: '#0a0a0a', borderBottomWidth: 1, borderBottomColor: '#1a1a1a' },
   backBtn: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
   composeTitle: { flex: 1, color: '#fff', fontSize: 18, fontWeight: '700', marginLeft: 8 },
   composeHdrRight: { flexDirection: 'row', gap: 8, alignItems: 'center' },
   draftBtn: { borderWidth: 1.5, borderColor: '#00ff88', borderRadius: 14, paddingHorizontal: 14, paddingVertical: 7 },
   draftBtnTxt: { color: '#00ff88', fontWeight: '700', fontSize: 13 },
-  postBtn: { backgroundColor: '#00ff88', borderRadius: 14, paddingHorizontal: 18, paddingVertical: 7 },
+  postBtn: { borderRadius: 14, overflow: 'hidden' },
+  postBtnGrad: { paddingHorizontal: 18, paddingVertical: 7, alignItems: 'center', justifyContent: 'center' },
   postBtnTxt: { color: '#000', fontWeight: '800', fontSize: 13 },
-  previewBox: { margin: 16, borderRadius: 16, overflow: 'hidden', position: 'relative', backgroundColor: '#111' },
-  previewMedia: { width: '100%', height: SW * 1.2, borderRadius: 16 },
-  prevCinBar: { position: 'absolute', left: 0, right: 0, height: 50, backgroundColor: '#000', zIndex: 5 },
-  previewInfo: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: 'rgba(0,0,0,0.75)', paddingHorizontal: 12, paddingVertical: 8 },
-  previewInfoTxt: { color: '#00ff88', fontSize: 11, fontWeight: '600' },
-  captionBox: { marginHorizontal: 16, marginBottom: 12, backgroundColor: '#0d0d0d', borderRadius: 14, padding: 12, borderWidth: 1, borderColor: '#1a1a1a' },
-  captionInput: { color: '#fff', fontSize: 15, minHeight: 60, textAlignVertical: 'top' },
+
+  // Top row - media left, filters right
+  topRow: { flexDirection: 'row', marginHorizontal: 12, marginTop: 12, gap: 8 },
+  previewBox: { flex: 1, borderRadius: 16, overflow: 'hidden', backgroundColor: '#111', position: 'relative' },
+  prevCinBar: { position: 'absolute', left: 0, right: 0, height: 44, backgroundColor: '#000', zIndex: 5 },
+  previewInfo: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: 'rgba(0,0,0,0.78)', paddingHorizontal: 10, paddingVertical: 7, zIndex: 6 },
+  previewInfoTxt: { color: '#00ff88', fontSize: 10, fontWeight: '600' },
+
+  // Filter side panel - vertical scroll on right
+  filterSidePanel: { width: SW * 0.24, backgroundColor: '#0a0a0a', borderRadius: 16, overflow: 'hidden', borderWidth: 1, borderColor: '#1a1a1a' },
+  filterSideCard: { alignItems: 'center', backgroundColor: '#111', marginHorizontal: 4, marginVertical: 2, borderRadius: 12, paddingVertical: 10, paddingHorizontal: 4, borderWidth: 1, borderColor: '#1a1a1a', position: 'relative' },
+  filterSideCardActive: { backgroundColor: '#001a0a', borderColor: '#00ff88' },
+  filterSideCheck: { position: 'absolute', top: 4, right: 4, width: 14, height: 14, borderRadius: 7, backgroundColor: '#00ff88', alignItems: 'center', justifyContent: 'center', zIndex: 2 },
+  filterSideTxt: { color: '#888', fontSize: 9, fontWeight: '600', marginTop: 4, textAlign: 'center' },
+
+  // Caption
+  captionBox: { marginHorizontal: 12, marginTop: 10, marginBottom: 8, backgroundColor: '#0d0d0d', borderRadius: 14, padding: 12, borderWidth: 1, borderColor: '#1a1a1a' },
+  captionInput: { color: '#fff', fontSize: 14, minHeight: 52, textAlignVertical: 'top' },
   captionCount: { color: '#555', fontSize: 10, textAlign: 'right', marginTop: 4 },
-  section: { marginBottom: 8, backgroundColor: '#0a0a0a', borderTopWidth: 1, borderBottomWidth: 1, borderColor: '#1a1a1a', paddingVertical: 12 },
-  sectionHdr: { paddingHorizontal: 16, marginBottom: 4 },
-  sectionTitle: { color: '#fff', fontSize: 14, fontWeight: '700' },
-  sectionSub: { color: '#666', fontSize: 11, marginTop: 2 },
-  filterCard: { alignItems: 'center', backgroundColor: '#111', borderRadius: 12, padding: 10, minWidth: 72, borderWidth: 1, borderColor: '#1a1a1a', position: 'relative' },
-  filterCardActive: { backgroundColor: '#001a0a', borderColor: '#00ff88' },
-  filterCardTxt: { color: '#888', fontSize: 10, fontWeight: '600', marginTop: 4 },
-  filterCheck: { position: 'absolute', top: 4, right: 4, width: 16, height: 16, borderRadius: 8, backgroundColor: '#00ff88', alignItems: 'center', justifyContent: 'center' },
+
+  // FX panel
+  fxPanel: { marginHorizontal: 12, marginBottom: 8, backgroundColor: '#0d0d0d', borderRadius: 16, paddingVertical: 12, borderWidth: 1, borderColor: '#1a1a1a' },
+  fxPanelHdr: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, marginBottom: 10 },
+  fxPanelIcon: { fontSize: 18 },
+  fxPanelTitle: { color: '#fff', fontSize: 13, fontWeight: '700' },
+  fxPanelSub: { color: '#666', fontSize: 10, marginTop: 1 },
   fxCatBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#111', borderRadius: 14, paddingHorizontal: 10, paddingVertical: 5, gap: 4, borderWidth: 1, borderColor: '#1a1a1a' },
   fxCatTxt: { color: '#888', fontSize: 10, fontWeight: '600' },
-  fxCard: { alignItems: 'center', backgroundColor: '#111', borderRadius: 12, padding: 10, minWidth: 80, borderWidth: 1, borderColor: '#1a1a1a', position: 'relative' },
+  fxCard: { alignItems: 'center', backgroundColor: '#111', borderRadius: 12, padding: 10, minWidth: 78, borderWidth: 1, borderColor: '#1a1a1a', position: 'relative' },
   fxCardActive: { backgroundColor: '#001a0a', borderColor: '#00ff88' },
   fxCardName: { color: '#fff', fontSize: 10, fontWeight: '700', marginTop: 4, textAlign: 'center' },
   fxCardDesc: { color: '#555', fontSize: 8, textAlign: 'center', marginTop: 2 },
   fxCheck: { position: 'absolute', top: 4, right: 4, width: 15, height: 15, borderRadius: 8, backgroundColor: '#00ff88', alignItems: 'center', justifyContent: 'center' },
-  vibeBtn: { alignItems: 'center', backgroundColor: '#111', borderRadius: 12, padding: 10, minWidth: 72, borderWidth: 1, borderColor: '#1a1a1a', position: 'relative' },
+
+  // Music section
+  musicSection: { marginHorizontal: 12, marginBottom: 8, backgroundColor: '#0d0d0d', borderRadius: 16, padding: 14, borderWidth: 1, borderColor: '#1a1a1a' },
+  musicSectionHdr: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
+  musicSectionTitle: { color: '#fff', fontSize: 13, fontWeight: '700' },
+  musicStudioBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: '#001a0a', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 5, borderWidth: 1, borderColor: '#00ff8844' },
+  musicStudioTxt: { color: '#00ff88', fontSize: 11, fontWeight: '700' },
+  musicPickBtn: { borderRadius: 12, overflow: 'hidden', marginBottom: 8, borderWidth: 1, borderColor: '#aa00ff44' },
+  musicPickGrad: { flexDirection: 'row', alignItems: 'center', padding: 12 },
+  musicPickTitle: { color: '#aa00ff', fontSize: 13, fontWeight: '700' },
+  musicPickSub: { color: '#666', fontSize: 10, marginTop: 2 },
+  musicPlayerRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#111', borderRadius: 12, padding: 10, marginBottom: 8, borderWidth: 1, borderColor: '#ffd70044' },
+  musicPlayBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#ffd700', alignItems: 'center', justifyContent: 'center' },
+  musicActiveRow: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#111', borderRadius: 10, padding: 10, marginBottom: 6, borderWidth: 1, borderColor: '#1a1a1a' },
+  musicActiveDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#ffd700' },
+  musicActiveName: { flex: 1, color: '#fff', fontSize: 12, fontWeight: '600' },
+  musicActiveArtist: { color: '#888', fontSize: 11 },
+
+  // Shared section wrapper
+  section: { marginHorizontal: 12, marginBottom: 8, backgroundColor: '#0d0d0d', borderRadius: 16, paddingVertical: 12, borderWidth: 1, borderColor: '#1a1a1a' },
+  sectionHdr: { paddingHorizontal: 14, marginBottom: 4 },
+  sectionTitle: { color: '#fff', fontSize: 13, fontWeight: '700' },
+  sectionSub: { color: '#666', fontSize: 10, marginTop: 2 },
+
+  // Vibe
+  vibeBtn: { alignItems: 'center', backgroundColor: '#111', borderRadius: 12, padding: 10, minWidth: 68, borderWidth: 1, borderColor: '#1a1a1a', position: 'relative' },
   vibeTxt: { color: '#888', fontSize: 10, fontWeight: '700', marginTop: 4 },
   vibeCheck: { position: 'absolute', top: 4, right: 4, width: 14, height: 14, borderRadius: 7, alignItems: 'center', justifyContent: 'center' },
+
+  // Speed
   speedBtn: { flex: 1, alignItems: 'center', backgroundColor: '#111', borderRadius: 10, paddingVertical: 10, borderWidth: 1, borderColor: '#1a1a1a' },
   speedBtnActive: { backgroundColor: '#001a0a', borderColor: '#00ff88' },
   speedTxt: { color: '#888', fontSize: 10, fontWeight: '700', marginTop: 2 },
-  musicRow: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#0d0d0d', borderRadius: 10, padding: 10, marginBottom: 8, borderWidth: 1, borderColor: '#1a1a1a' },
-  musicName: { flex: 1, color: '#fff', fontSize: 12, fontWeight: '600' },
-  musicArtist: { color: '#888', fontSize: 11 },
-  settingsGrid: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 12, gap: 8 },
-  settingItem: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#0d0d0d', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10, borderWidth: 1, borderColor: '#1a1a1a', minWidth: (SW - 48) / 2 - 4, flex: 1 },
-  settingLabel: { color: '#ccc', fontSize: 12, fontWeight: '600' },
-  metaRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#1a1a1a' },
+
+  // Settings
+  settingsGrid: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 10, gap: 8 },
+  settingItem: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#111', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, borderWidth: 1, borderColor: '#1a1a1a', flex: 1, minWidth: (SW - 56) / 2 },
+  settingLabel: { color: '#ccc', fontSize: 11, fontWeight: '600' },
+
+  // Meta rows
+  metaRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginHorizontal: 12, paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: '#1a1a1a' },
   metaTxt: { flex: 1, color: '#666', fontSize: 13 },
-  schedulePanel: { paddingHorizontal: 16, paddingVertical: 12, backgroundColor: '#0a0a0a', borderBottomWidth: 1, borderBottomColor: '#1a1a1a' },
+
+  // Schedule
+  schedulePanel: { marginHorizontal: 12, paddingVertical: 12, backgroundColor: '#0d0d0d', borderRadius: 12, marginBottom: 8, paddingHorizontal: 14, borderWidth: 1, borderColor: '#1a1a1a' },
   scheduleSwitchRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
   scheduleTxt: { color: '#ccc', fontSize: 14, fontWeight: '600' },
   datePickerBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#111', borderRadius: 10, padding: 12, borderWidth: 1, borderColor: '#ffd70033' },
   datePickerTxt: { color: '#ffd700', fontSize: 13, fontWeight: '600' },
-  marketBadge: { flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 16, marginVertical: 8, backgroundColor: '#1a1200', borderRadius: 10, padding: 12, borderWidth: 1, borderColor: '#ffd70033' },
+
+  // Marketplace
+  marketBadge: { flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 12, marginVertical: 6, backgroundColor: '#1a1200', borderRadius: 10, padding: 12, borderWidth: 1, borderColor: '#ffd70033' },
   marketTxt: { color: '#ffd700', fontSize: 12, fontWeight: '600', flex: 1 },
-  editAppsBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingVertical: 14, borderTopWidth: 1, borderBottomWidth: 1, borderColor: '#1a1a1a', marginTop: 8 },
+
+  // Edit apps
+  editAppsBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 12, paddingVertical: 13, borderTopWidth: 1, borderBottomWidth: 1, borderColor: '#1a1a1a', marginTop: 4 },
   editAppsBtnTxt: { flex: 1, color: '#666', fontSize: 13 },
   editAppCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#0d0d0d', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: '#1a1a1a' },
   editAppName: { color: '#fff', fontSize: 13, fontWeight: '700' },

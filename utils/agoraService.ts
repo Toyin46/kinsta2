@@ -15,7 +15,7 @@ import {
 } from 'react-native-agora';
 
 const AGORA_APP_ID =
-  process.env.EXPO_PUBLIC_AGORA_APP_ID || '2203baf2104240b099a85436a2c62488';
+  process.env.EXPO_PUBLIC_AGORA_APP_ID || '23694cd7d52442a78061c0a117009d61';
 
 export type CallType = 'voice' | 'video';
 

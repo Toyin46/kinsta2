@@ -53,11 +53,11 @@
     "plugins": [
       "expo-router",
       [
-        "expo-camera",
+        "react-native-vision-camera",
         {
-          "cameraPermission": "Allow LumVibe to access your camera.",
-          "microphonePermission": "Allow LumVibe to access your microphone to record audio.",
-          "recordAudioAndroid": true
+          "cameraPermissionText": "Allow LumVibe to access your camera to create posts",
+          "microphonePermissionText": "Allow LumVibe to access your microphone to record audio",
+          "enableCodeScanner": false
         }
       ],
       [
@@ -102,7 +102,8 @@
       },
       "eas": {
         "projectId": "cc54ae3d-1746-409a-8041-cead41240d56"
-      }
+      },
+      "agoraAppId": "23694cd7d52442a78061c0a117009d61"
     },
     "owner": "toyin",
     "runtimeVersion": {
@@ -112,4 +113,4 @@
       "url": "https://u.expo.dev/cc54ae3d-1746-409a-8041-cead41240d56"
     }
   }
-}
+} 
