@@ -33,6 +33,9 @@
       },
       "package": "com.lumvibe.app",
       "versionCode": 1,
+      "compileSdkVersion": 35,
+      "targetSdkVersion": 34,
+      "buildToolsVersion": "34.0.0",
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO",
@@ -51,6 +54,7 @@
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
+      "./plugins/withDeepARFix",
       "expo-router",
       [
         "react-native-vision-camera",
@@ -113,4 +117,4 @@
       "url": "https://u.expo.dev/cc54ae3d-1746-409a-8041-cead41240d56"
     }
   }
-} 
+}
