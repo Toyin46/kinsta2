@@ -1,5 +1,5 @@
 // app/privacy.tsx
-// ✅ Privacy Policy for Kinsta — JOSEPH TECHNOLOGIES LIMITED
+// ✅ Privacy Policy for LumVibe — JOSEPH TECHNOLOGIES LIMITED
 // ✅ GDPR + NDPR (Nigeria Data Protection Regulation) compliant
 // Usage: router.push('/privacy')
 
@@ -25,15 +25,14 @@ export default function PrivacyPolicyScreen() {
 
       <ScrollView contentContainerStyle={s.scroll} showsVerticalScrollIndicator={false}>
 
-        <Text style={s.lastUpdated}>Last updated: March 2026</Text>
+        <Text style={s.lastUpdated}>Last updated: May 2026</Text>
         <Text style={s.intro}>
-          JOSEPH TECHNOLOGIES LIMITED ("we", "us", "our") operates the Kinsta app.
+          JOSEPH TECHNOLOGIES LIMITED ("we", "us", "our") operates the LumVibe app.
           This Privacy Policy explains how we collect, use, and protect your personal
           information in compliance with the Nigeria Data Protection Regulation (NDPR)
           and applicable international laws.
         </Text>
 
-        {/* 1 */}
         <Text style={s.sectionTitle}>1. Information We Collect</Text>
         <Text style={s.body}>
           <Text style={s.bold}>Information you provide:{'\n'}</Text>
@@ -55,7 +54,6 @@ export default function PrivacyPolicyScreen() {
             amounts are stored in our database.
         </Text>
 
-        {/* 2 */}
         <Text style={s.sectionTitle}>2. How We Use Your Information</Text>
         <Text style={s.body}>
           We use your information to:{'\n\n'}
@@ -70,7 +68,6 @@ export default function PrivacyPolicyScreen() {
           We do NOT sell your personal data to third parties for marketing purposes.
         </Text>
 
-        {/* 3 */}
         <Text style={s.sectionTitle}>3. How We Share Your Information</Text>
         <Text style={s.body}>
           We share your information only with:{'\n\n'}
@@ -91,10 +88,9 @@ export default function PrivacyPolicyScreen() {
           We may disclose information if required by Nigerian law or court order.
         </Text>
 
-        {/* 4 */}
         <Text style={s.sectionTitle}>4. Public Information</Text>
         <Text style={s.body}>
-          The following information is visible to all users of Kinsta:{'\n\n'}
+          The following information is visible to all users of LumVibe:{'\n\n'}
           • Your username and display name{'\n'}
           • Your profile photo{'\n'}
           • Your bio{'\n'}
@@ -105,7 +101,6 @@ export default function PrivacyPolicyScreen() {
           are NEVER shown to other users.
         </Text>
 
-        {/* 5 */}
         <Text style={s.sectionTitle}>5. Data Storage and Security</Text>
         <Text style={s.body}>
           Your data is stored securely on Supabase servers located in the EU
@@ -119,7 +114,6 @@ export default function PrivacyPolicyScreen() {
           we will notify you within 72 hours.
         </Text>
 
-        {/* 6 */}
         <Text style={s.sectionTitle}>6. Data Retention</Text>
         <Text style={s.body}>
           We retain your data for as long as your account is active.{'\n\n'}
@@ -129,7 +123,6 @@ export default function PrivacyPolicyScreen() {
           • Anonymised analytics data may be retained indefinitely.
         </Text>
 
-        {/* 7 */}
         <Text style={s.sectionTitle}>7. Your Rights</Text>
         <Text style={s.body}>
           Under the Nigeria Data Protection Regulation (NDPR) and GDPR, you have the right to:{'\n\n'}
@@ -139,60 +132,55 @@ export default function PrivacyPolicyScreen() {
           • <Text style={s.bold}>Portability</Text> — receive your data in a portable format{'\n'}
           • <Text style={s.bold}>Objection</Text> — object to how we process your data{'\n'}
           • <Text style={s.bold}>Withdraw consent</Text> — at any time for data processing based on consent{'\n\n'}
-          To exercise any of these rights, email us at support@kinsta.app.
+          To exercise any of these rights, email us at support@lumvibe.site.
           We will respond within 30 days.
         </Text>
 
-        {/* 8 */}
         <Text style={s.sectionTitle}>8. Children's Privacy</Text>
         <Text style={s.body}>
-          Kinsta is not directed at children under 13. We do not knowingly collect
+          LumVibe is not directed at children under 13. We do not knowingly collect
           personal data from children under 13. If we discover that a child under 13
           has created an account, we will delete it immediately.{'\n\n'}
-          If you believe a child under 13 is using Kinsta, please contact us at
-          support@kinsta.app.
+          If you believe a child under 13 is using LumVibe, please contact us at
+          support@lumvibe.site.
         </Text>
 
-        {/* 9 */}
         <Text style={s.sectionTitle}>9. Cookies and Tracking</Text>
         <Text style={s.body}>
-          The Kinsta mobile app does not use browser cookies. However, we use:{'\n\n'}
+          The LumVibe mobile app does not use browser cookies. However, we use:{'\n\n'}
           • <Text style={s.bold}>Device identifiers</Text> — to identify your device for push notifications{'\n'}
           • <Text style={s.bold}>Analytics</Text> — to understand how users interact with the app{'\n'}
           • <Text style={s.bold}>AdMob advertising ID</Text> — for ad personalisation (can be disabled in device settings)
         </Text>
 
-        {/* 10 */}
         <Text style={s.sectionTitle}>10. Third-Party Links</Text>
         <Text style={s.body}>
-          Kinsta may contain links to third-party websites or services. We are not
+          LumVibe may contain links to third-party websites or services. We are not
           responsible for the privacy practices of those third parties. Please review
           their privacy policies before providing any personal information.
         </Text>
 
-        {/* 11 */}
         <Text style={s.sectionTitle}>11. International Users</Text>
         <Text style={s.body}>
-          Kinsta is based in Nigeria but accessible worldwide. If you are using
-          Kinsta from outside Nigeria, your data will be transferred to and processed
+          LumVibe is based in Nigeria but accessible worldwide. If you are using
+          LumVibe from outside Nigeria, your data will be transferred to and processed
           in Nigeria and the EU (where our servers are located).{'\n\n'}
-          By using Kinsta, you consent to this transfer and processing of your data.
+          By using LumVibe, you consent to this transfer and processing of your data.
         </Text>
 
-        {/* 12 */}
         <Text style={s.sectionTitle}>12. Changes to This Policy</Text>
         <Text style={s.body}>
           We may update this Privacy Policy from time to time. We will notify you
           of significant changes via in-app notification at least 7 days before
-          they take effect. Continued use of Kinsta after changes means you accept
+          they take effect. Continued use of LumVibe after changes means you accept
           the updated policy.
         </Text>
 
-        {/* 13 */}
         <Text style={s.sectionTitle}>13. Contact Us</Text>
         <Text style={s.body}>
           For privacy concerns or data requests, contact us:{'\n\n'}
-          📧 Email: support@kinsta.app{'\n'}
+          📧 Email: support@lumvibe.site{'\n'}
+          🌐 Website: lumvibe.site{'\n'}
           🏢 Company: JOSEPH TECHNOLOGIES LIMITED{'\n'}
           📍 Location: Minna, Niger State, Nigeria{'\n'}
           {'\n'}
@@ -201,7 +189,6 @@ export default function PrivacyPolicyScreen() {
 
         <View style={s.footer}>
           <Text style={s.footerText}>© 2026 JOSEPH TECHNOLOGIES LIMITED. All rights reserved.</Text>
-          <Text style={s.footerText}></Text>
         </View>
 
         <View style={{ height: 40 }} />

@@ -1,8 +1,8 @@
 // FILE: app/chat/[id].tsx
 // ─────────────────────────────────────────────────────────────
-// Kinsta — Chat Screen  (fully professional rewrite)
+// LumVibe — Chat Screen  (fully professional rewrite)
 // ✅ Real Supabase Realtime presence → actual online/offline dot
-// ✅ Co-Watch chip opens a video-picker modal, not a dead nav
+// ✅ Co-Watch chip navigates directly to /chat/cowatch (no picker modal needed)
 // ✅ Video chip picks a video from gallery and sends it
 // ✅ Location / Remix / Song / GIF chips removed (not ready)
 // ✅ Pulse rings bug fixed
@@ -12,6 +12,7 @@
 // ✅ iOS KeyboardAvoidingView offset fixed
 // ✅ Image onError fallback
 // ✅ Character counter shown near 2000
+// ✅ Call modal respects status bar / notch / Dynamic Island
 // ✅ All original features preserved
 // ─────────────────────────────────────────────────────────────
 
@@ -27,6 +28,7 @@ import { Audio } from 'expo-av';
 import * as ImagePicker from 'expo-image-picker';
 import { RealtimeChannel } from '@supabase/supabase-js';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from '../../config/supabase';
 import { useAuthStore } from '../../store/authStore';
 
@@ -580,81 +582,6 @@ function Waveform({ isMe }: { isMe: boolean }) {
   );
 }
 
-// ── CO-WATCH PICKER MODAL ─────────────────────────────────────
-// Shows when the Co-Watch chip is tapped. User picks from their
-// recent shared videos or pastes a video ID. When confirmed,
-// navigates to /chat/cowatch with real params.
-function CoWatchPickerModal({
-  visible, onClose, onConfirm, otherName, otherPhoto, conversationId,
-}: {
-  visible: boolean; onClose: () => void;
-  onConfirm: (videoId: string, title: string) => void;
-  otherName: string; otherPhoto?: string; conversationId: string;
-}) {
-  const [videoId, setVideoId] = useState('');
-  const [title,   setTitle]   = useState('');
-
-  const handleConfirm = () => {
-    const trimId = videoId.trim();
-    if (!trimId) { Alert.alert('Enter a Video ID', 'Please paste a Kinsta video ID to watch together.'); return; }
-    onConfirm(trimId, title.trim() || 'Shared Video');
-    setVideoId(''); setTitle('');
-  };
-
-  return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <View style={styles.cowatchOverlay}>
-        <View style={styles.cowatchSheet}>
-          {/* Handle bar */}
-          <View style={styles.sheetHandle} />
-
-          <View style={styles.cowatchHeader}>
-            <Ionicons name="film-outline" size={22} color={C.green} />
-            <Text style={styles.cowatchTitle}>Watch Together</Text>
-          </View>
-
-          <Text style={styles.cowatchSubtitle}>
-            Watch a video in sync with {otherName}. Both of you see the same frame at the same time.
-          </Text>
-
-          <View style={styles.cowatchInputWrap}>
-            <Text style={styles.cowatchLabel}>Video ID</Text>
-            <TextInput
-              style={styles.cowatchInput}
-              placeholder="Paste a Kinsta video ID…"
-              placeholderTextColor={C.muted2}
-              value={videoId}
-              onChangeText={setVideoId}
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-          </View>
-
-          <View style={styles.cowatchInputWrap}>
-            <Text style={styles.cowatchLabel}>Title (optional)</Text>
-            <TextInput
-              style={styles.cowatchInput}
-              placeholder="e.g. 'Funny clip 😂'"
-              placeholderTextColor={C.muted2}
-              value={title}
-              onChangeText={setTitle}
-            />
-          </View>
-
-          <TouchableOpacity style={styles.cowatchConfirmBtn} onPress={handleConfirm}>
-            <Ionicons name="play-circle" size={18} color="#000" />
-            <Text style={styles.cowatchConfirmText}>Start Co-Watch</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity style={styles.cowatchCancelBtn} onPress={onClose}>
-            <Text style={styles.cowatchCancelText}>Cancel</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-    </Modal>
-  );
-}
-
 // ── CALL MODAL ────────────────────────────────────────────────
 // callType is now read from callState — no redundant prop
 function CallModal({
@@ -668,10 +595,11 @@ function CallModal({
 }) {
   const { callType } = callState;
   const canShowVideo = callType === 'video' && AgoraEngine && RtcLocalView && RtcRemoteView;
+  const insets = useSafeAreaInsets();
 
   return (
     <Modal visible={visible} animationType="slide" statusBarTranslucent>
-      <View style={styles.callModal}>
+      <View style={[styles.callModal, { paddingTop: insets.top + 20, paddingBottom: insets.bottom + 30 }]}>
         <StatusBar barStyle="light-content" backgroundColor="#000" />
 
         {/* Remote video — full background */}
@@ -977,7 +905,6 @@ export default function ChatScreen() {
   const [replyTo,        setReplyTo]        = useState<Message | null>(null);
   const [isRecording,    setIsRecording]    = useState(false);
   const [recordingDur,   setRecordingDur]   = useState(0);
-  const [showCoWatch,    setShowCoWatch]    = useState(false);
   const [uploadingVideo, setUploadingVideo] = useState(false);
 
   const recordingRef   = useRef<Audio.Recording | null>(null);
@@ -1084,22 +1011,6 @@ export default function ChatScreen() {
     if (id) await toggleDisappearing(id, newVal);
   }, [vanishOn, id]);
 
-  // ── Co-Watch confirm ──────────────────────────────────────
-  const handleCoWatchConfirm = useCallback((videoId: string, title: string) => {
-    setShowCoWatch(false);
-    router.push({
-      pathname: '/chat/cowatch',
-      params: {
-        conversationId: id,
-        videoId,
-        videoTitle: title,
-        videoUrl: '',
-        otherName: otherName || '',
-        otherPhoto: otherPhoto || '',
-      },
-    });
-  }, [id, otherName, otherPhoto]);
-
   if (loading) {
     return (
       <SafeAreaView style={[styles.safe, { alignItems: 'center', justifyContent: 'center' }]}>
@@ -1158,8 +1069,18 @@ export default function ChatScreen() {
         style={styles.featRow}
         contentContainerStyle={{ gap: 6, paddingHorizontal: 14, alignItems: 'center' }}>
 
-        {/* Co-Watch — now opens picker modal */}
-        <TouchableOpacity style={styles.featChip} onPress={() => setShowCoWatch(true)}>
+        {/* ✅ Co-Watch — navigates directly, no picker modal needed */}
+        <TouchableOpacity
+          style={styles.featChip}
+          onPress={() => router.push({
+            pathname: '/chat/cowatch',
+            params: {
+              conversationId: id,
+              otherName: otherName || '',
+              otherPhoto: otherPhoto || '',
+            },
+          })}
+        >
           <Ionicons name="film-outline" size={12} color={C.muted} />
           <Text style={styles.featChipText}>Co-Watch</Text>
         </TouchableOpacity>
@@ -1204,9 +1125,6 @@ export default function ChatScreen() {
                 pathname: '/chat/cowatch',
                 params: {
                   conversationId: id,
-                  videoId: msg.shared_video_id || '',
-                  videoTitle: msg.shared_video_title || '',
-                  videoUrl: msg.media_url || '',
                   otherName: otherName || '',
                   otherPhoto: otherPhoto || '',
                 },
@@ -1368,16 +1286,6 @@ export default function ChatScreen() {
           </View>
         </TouchableOpacity>
       </Modal>
-
-      {/* ── Co-Watch Picker Modal ── */}
-      <CoWatchPickerModal
-        visible={showCoWatch}
-        onClose={() => setShowCoWatch(false)}
-        onConfirm={handleCoWatchConfirm}
-        otherName={otherName || 'them'}
-        otherPhoto={otherPhoto}
-        conversationId={id}
-      />
 
       {/* ── Call Modal ── */}
       <CallModal
@@ -1594,44 +1502,13 @@ const styles = StyleSheet.create({
     borderRadius: 20, paddingVertical: 10, paddingHorizontal: 20,
   },
 
-  // ── CO-WATCH PICKER MODAL ─────────────────────────────────
-  cowatchOverlay: {
-    flex: 1, backgroundColor: 'rgba(0,0,0,0.75)',
-    justifyContent: 'flex-end',
-  },
-  cowatchSheet: {
-    backgroundColor: C.card, borderTopLeftRadius: 24, borderTopRightRadius: 24,
-    paddingHorizontal: 24, paddingTop: 12, paddingBottom: 36,
-    borderTopWidth: 1, borderColor: C.border,
-  },
-  sheetHandle: {
-    width: 40, height: 4, borderRadius: 2, backgroundColor: C.muted2,
-    alignSelf: 'center', marginBottom: 20,
-  },
-  cowatchHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 10 },
-  cowatchTitle:  { fontSize: 18, fontWeight: '800', color: C.white },
-  cowatchSubtitle: { fontSize: 13, color: C.muted, lineHeight: 19, marginBottom: 22 },
-  cowatchInputWrap:{ marginBottom: 14 },
-  cowatchLabel:  { fontSize: 11.5, color: C.muted, fontWeight: '600', marginBottom: 6, letterSpacing: 0.3 },
-  cowatchInput: {
-    backgroundColor: C.card2, borderWidth: 1, borderColor: C.border,
-    borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12,
-    color: C.white, fontSize: 14,
-  },
-  cowatchConfirmBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    backgroundColor: C.green, borderRadius: 14,
-    paddingVertical: 15, marginTop: 8, marginBottom: 10,
-  },
-  cowatchConfirmText: { fontSize: 15, fontWeight: '800', color: '#000' },
-  cowatchCancelBtn:   { alignItems: 'center', paddingVertical: 8 },
-  cowatchCancelText:  { fontSize: 14, color: C.muted, fontWeight: '600' },
-
   // ── CALL MODAL ────────────────────────────────────────────
   callModal: {
     flex: 1, backgroundColor: '#050505',
     alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 24, paddingTop: 80, paddingBottom: 50,
+    paddingHorizontal: 24,
+    // paddingTop and paddingBottom are set dynamically via useSafeAreaInsets
+    // so the call UI never hides behind the status bar, notch, or Dynamic Island
   },
   callVideoRemote: { ...StyleSheet.absoluteFillObject, backgroundColor: '#000', zIndex: 0 },
   callVideoLocal: {
@@ -1665,4 +1542,4 @@ const styles = StyleSheet.create({
   callCtrlActive:      { backgroundColor: 'rgba(0,230,118,0.12)', borderColor: C.green },
   callEndBtn:          { backgroundColor: C.red, borderColor: '#c62828', width: 68, height: 68, borderRadius: 34 },
   callCtrlLabel:       { fontSize: 11, color: '#666', fontWeight: '500', letterSpacing: 0.2 },
-}); 
+});

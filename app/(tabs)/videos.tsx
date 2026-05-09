@@ -1,11 +1,15 @@
-// app/(tabs)/videos.tsx — KINSTA VIDEO FEED v2
-// ✅ BUG FIX: Ad + winner card double-injection at index 3 fixed (else if)
-// ✅ BUG FIX: Unlike now uses badge multiplier — no more point inflation
-// ✅ BUG FIX: Both gift handlers do fresh DB read before writing coins_received
-// ✅ BUG FIX: loadVideos now uses Promise.all for parallel fetching (was sequential)
-// ✅ ALGORITHM v2: saves, virality ratio, location boost, gentle decay, immerseBoost kept
-// ✅ All original features preserved: Immerse mode, haptics, seek bar, spatial audio, vibe badge
-// ✅ TikTok-style native ad: NativeAdPost now renders as a full-screen fake video post (gradient bg, bottom-left info, right-side actions, Sponsored pill, hidden BannerAd for revenue)
+// app/(tabs)/videos.tsx — LUMVIBE VIDEO FEED
+// ✅ All original features preserved: Immerse, haptics, seek bar, spatial audio, vibe badge
+// ✅ Ad + winner card double-injection fixed, unlike badge multiplier fixed
+// ✅ Both gift handlers do fresh DB read, loadVideos uses Promise.all
+// ✅ ALGORITHM v2: saves, virality ratio, location boost, gentle decay
+// ✅ Post interface: music_url + voice_duration declared, fetched, mapped
+// ─────────────────────────────────────────────────────────
+// v2.2 VIDEO PLAYBACK FIX (ROOT CAUSE):
+//  ✅ Cloudinary l_text/e_brightness transforms on VIDEO = paid feature
+//     create.tsx now saves plain Cloudinary upload URLs (no transforms)
+//     → Video component loads instantly, black screen eliminated
+//  ✅ isActive effect simplified back to 150ms — no warm-up needed
 
 import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import {
@@ -16,6 +20,7 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import { Video, ResizeMode, AVPlaybackStatus } from 'expo-av';
 import * as MediaLibrary from 'expo-media-library';
+import * as FileSystem from 'expo-file-system';
 import * as Haptics from 'expo-haptics';
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAuthStore } from '@/store/authStore';
@@ -35,11 +40,11 @@ const POINTS_PER_COMMENT = 15;
 const POINTS_PER_SHARE   = 30;
 
 const FEED_SETTINGS = {
-  windowSize: 3,
-  maxToRenderPerBatch: 2,
-  initialNumToRender: 2,
-  updateCellsBatchingPeriod: 100,
-  itemVisiblePercentThreshold: 85,
+  windowSize: 2,                  // Only keep 2 screens in memory — saves RAM on 2GB phones
+  maxToRenderPerBatch: 1,         // Render 1 at a time — prevents jank on scroll
+  initialNumToRender: 1,          // Start with just 1 — app opens faster
+  updateCellsBatchingPeriod: 200, // Batch updates every 200ms — fewer JS thread interrupts
+  itemVisiblePercentThreshold: 60, // Trigger at 60% visible — starts buffering sooner
 };
 
 async function getOwnerBadgeMultipliers(ownerId: string) {
@@ -180,8 +185,13 @@ interface Post {
   user_photo_url?: string; media_url?: string; caption: string;
   likes_count: number; comments_count: number; views_count: number;
   coins_received: number; liked_by: string[]; location?: string;
-  music_name?: string; music_artist?: string; created_at: string;
-  has_watermark?: boolean; _score?: number;
+  music_name?: string; music_artist?: string;
+  // ✅ FIX: music_url and voice_duration added to interface — without these TypeScript
+  // treats them as unknown on item, so the music tap handler and duration display fail.
+  music_url?: string | null; voice_duration?: number | null;
+  // ✅ FIX: applied_filter added so tintColor fallback works for older posts
+  applied_filter?: string;
+  created_at: string; has_watermark?: boolean; watermarked_url?: string | null; _score?: number;
   video_effect?: string; video_filter_tint?: string; playback_rate?: number;
   is_immerse?: boolean; haptic_pattern?: string | null;
   spatial_audio?: boolean | null; vibe_type?: string | null;
@@ -434,8 +444,8 @@ const winnerStyles = StyleSheet.create({
 // ─── AD POST (TikTok-style native ad — looks like a real video post) ──────────
 const NATIVE_AD_SLOTS = [
   {
-    advertiser: 'Kinsta Premium',
-    username:   'kinsta_ads',
+    advertiser: 'LumVibe Premium',
+    username:   'lumvibe',
     avatar:     null as null,
     caption:    '🚀 Unlock Premium — no ads, exclusive badges & more. Upgrade today!',
     gradient:   ['#0d0d0d', '#001a0d', '#0d0d0d'] as const,
@@ -445,8 +455,8 @@ const NATIVE_AD_SLOTS = [
     bgEmoji:    '💎',
   },
   {
-    advertiser: 'Kinsta Coins',
-    username:   'kinsta_ads',
+    advertiser: 'LumVibe Coins',
+    username:   'lumvibe',
     avatar:     null as null,
     caption:    '🎁 Top up your coins and send gifts to your favourite creators!',
     gradient:   ['#0d0d0d', '#1a0d00', '#0d0d0d'] as const,
@@ -456,10 +466,10 @@ const NATIVE_AD_SLOTS = [
     bgEmoji:    '🪙',
   },
   {
-    advertiser: 'Kinsta Creator Fund',
-    username:   'kinsta_ads',
+    advertiser: 'LumVibe Creator Fund',
+    username:   'lumvibe',
     avatar:     null as null,
-    caption:    '✨ Join thousands of creators earning real money on Kinsta. Start posting now!',
+    caption:    '✨ Join thousands of creators earning real money on LumVibe. Start posting now!',
     gradient:   ['#0d0d0d', '#0d001a', '#0d0d0d'] as const,
     accentColor:'#a855f7',
     ctaLabel:   'Start Creating',
@@ -488,18 +498,20 @@ function NativeAdPost({ adIndex }: { adIndex: number }) {
 
   return (
     <View style={styles.videoContainer}>
-      {/* Full-screen gradient background mimicking a video */}
+      {/* Full-screen gradient background */}
       <LinearGradient colors={slot.gradient} style={StyleSheet.absoluteFillObject} />
 
-      {/* Big background emoji — acts as the "video thumbnail" */}
+      {/* Big background emoji */}
       <View style={nativeAdStyles.bgEmojiWrap} pointerEvents="none">
         <Animated.Text style={[nativeAdStyles.bgEmoji, { transform: [{ scale: pulseAnim }] }]}>
           {slot.bgEmoji}
         </Animated.Text>
       </View>
 
-      {/* Hidden BannerAd — loads in background for real ad revenue */}
-      <View style={nativeAdStyles.hiddenBanner}>
+      {/* ── ADMOB BANNER — top of screen, clearly separated, policy compliant ── */}
+      {/* Must be clearly labelled "Advertisement" and NOT adjacent to tappable content */}
+      <View style={nativeAdStyles.bannerAdContainer}>
+        <Text style={nativeAdStyles.bannerAdLabel}>Advertisement</Text>
         <BannerAd
           unitId={BANNER_AD_UNIT_ID}
           size={BannerAdSize.BANNER}
@@ -507,18 +519,32 @@ function NativeAdPost({ adIndex }: { adIndex: number }) {
           onAdLoaded={() => { setAdLoaded(true); setAdError(false); }}
           onAdFailedToLoad={() => setAdError(true)}
         />
+        {adError && <Text style={nativeAdStyles.adErrorText}>Ad unavailable</Text>}
       </View>
 
-      {/* ── Sponsored pill (top-left, just like TikTok) ── */}
+      {/* ── "Promoted" pill — clearly labelled, large enough to read ── */}
       <View style={nativeAdStyles.sponsoredPill}>
-        <Text style={nativeAdStyles.sponsoredText}>Sponsored</Text>
+        <Text style={nativeAdStyles.sponsoredText}>📢 Promoted by LumVibe</Text>
       </View>
 
-      {/* ── Bottom-left: advertiser info + caption (same position as VideoPost) ── */}
+      {/* ── Promo content — centre of screen, not adjacent to banner ── */}
+      <View style={nativeAdStyles.promoCentre}>
+        <Text style={nativeAdStyles.promoEmoji}>{slot.bgEmoji}</Text>
+        <Text style={nativeAdStyles.promoTitle}>{slot.advertiser}</Text>
+        <Text style={nativeAdStyles.promoCaption}>{slot.caption}</Text>
+        <TouchableOpacity
+          style={[nativeAdStyles.ctaButton, { backgroundColor: slot.accentColor }]}
+          onPress={() => router.push(slot.ctaRoute as any)}
+          activeOpacity={0.8}
+        >
+          <Text style={nativeAdStyles.ctaButtonText}>{slot.ctaLabel} →</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* ── Bottom info strip — no fake action buttons ── */}
       <View style={styles.videoInfo}>
         <View style={styles.userInfoOverlay}>
           <View style={styles.userInfoContent}>
-            {/* Avatar circle with accent colour */}
             <View style={[styles.videoUserAvatar, styles.avatarPlaceholder, { borderColor: slot.accentColor }]}>
               <MaterialCommunityIcons name="storefront-outline" size={20} color={slot.accentColor} />
             </View>
@@ -527,41 +553,6 @@ function NativeAdPost({ adIndex }: { adIndex: number }) {
               <Text style={styles.videoUsername}>@{slot.username}</Text>
             </View>
           </View>
-          {/* CTA button replaces Follow button */}
-          <TouchableOpacity
-            style={[nativeAdStyles.ctaButton, { backgroundColor: slot.accentColor }]}
-            onPress={() => router.push(slot.ctaRoute as any)}
-            activeOpacity={0.8}
-          >
-            <Text style={nativeAdStyles.ctaButtonText}>{slot.ctaLabel}</Text>
-          </TouchableOpacity>
-        </View>
-        <Text style={styles.videoCaption}>{slot.caption}</Text>
-      </View>
-
-      {/* ── Right-side action buttons (same layout as VideoPost, non-interactive) ── */}
-      <View style={styles.actionsRight}>
-        <View style={styles.actionButtonRight}>
-          <View style={styles.iconContainer}><Feather name="heart" size={32} color="#fff" /></View>
-          <Text style={styles.actionTextRight}>Like</Text>
-        </View>
-        <View style={styles.actionButtonRight}>
-          <View style={styles.iconContainer}><Feather name="message-circle" size={30} color="#fff" /></View>
-          <Text style={styles.actionTextRight}>Comment</Text>
-        </View>
-        <TouchableOpacity
-          style={styles.actionButtonRight}
-          onPress={() => router.push(slot.ctaRoute as any)}
-          activeOpacity={0.7}
-        >
-          <View style={[styles.iconContainer, { borderWidth: 2, borderColor: slot.accentColor }]}>
-            <Feather name="external-link" size={28} color={slot.accentColor} />
-          </View>
-          <Text style={[styles.actionTextRight, { color: slot.accentColor }]}>Visit</Text>
-        </TouchableOpacity>
-        <View style={styles.actionButtonRight}>
-          <View style={styles.iconContainer}><Feather name="share-2" size={30} color="#fff" /></View>
-          <Text style={styles.actionTextRight}>Share</Text>
         </View>
       </View>
     </View>
@@ -570,21 +561,31 @@ function NativeAdPost({ adIndex }: { adIndex: number }) {
 
 const nativeAdStyles = StyleSheet.create({
   bgEmojiWrap:    { ...StyleSheet.absoluteFillObject, justifyContent: 'center', alignItems: 'center' },
-  bgEmoji:        { fontSize: 160, opacity: 0.12 },
-  hiddenBanner:   { position: 'absolute', opacity: 0, pointerEvents: 'none' },
-  sponsoredPill:  { position: 'absolute', top: 52, left: 16, zIndex: 15, backgroundColor: 'rgba(255,255,255,0.18)', borderRadius: 6, paddingHorizontal: 10, paddingVertical: 4, borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)' },
-  sponsoredText:  { color: '#fff', fontSize: 11, fontWeight: '700', letterSpacing: 0.5 },
-  ctaButton:      { paddingHorizontal: 14, paddingVertical: 6, borderRadius: 20 },
-  ctaButtonText:  { color: '#000', fontSize: 13, fontWeight: '700' },
+  bgEmoji:        { fontSize: 160, opacity: 0.10 },
+  // AdMob banner — top of screen, clearly separated from all tappable content
+  bannerAdContainer: { position: 'absolute', top: 52, left: 0, right: 0, alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.7)', paddingVertical: 8, zIndex: 20, borderBottomWidth: 1, borderBottomColor: '#222' },
+  bannerAdLabel:     { color: 'rgba(255,255,255,0.55)', fontSize: 10, marginBottom: 4, letterSpacing: 0.5, fontWeight: '600' },
+  adErrorText:       { color: '#555', fontSize: 10, marginTop: 4 },
+  // "Promoted" pill — clearly readable, not subtle
+  sponsoredPill:  { position: 'absolute', top: 140, left: 16, zIndex: 15, backgroundColor: 'rgba(0,0,0,0.75)', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 5, borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.4)' },
+  sponsoredText:  { color: '#fff', fontSize: 12, fontWeight: '800', letterSpacing: 0.5 },
+  // Promo content — centred, not adjacent to the banner
+  promoCentre:    { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 32, paddingTop: 40 },
+  promoEmoji:     { fontSize: 64, marginBottom: 16 },
+  promoTitle:     { color: '#fff', fontSize: 22, fontWeight: '800', textAlign: 'center', marginBottom: 10 },
+  promoCaption:   { color: 'rgba(255,255,255,0.75)', fontSize: 14, textAlign: 'center', lineHeight: 22, marginBottom: 28 },
+  ctaButton:      { paddingHorizontal: 28, paddingVertical: 14, borderRadius: 24 },
+  ctaButtonText:  { color: '#000', fontSize: 15, fontWeight: '800' },
 });
 
 // ─── VIDEO POST ───────────────────────────────────────────────────────────────
 function VideoPost({
-  item, activePostId, onLike, onComment, onGift, onFollow, onUserPress, onShare, onSaveMedia, user, onView, followStatusMap, onImmerseInfo
+  item, activePostId, onLike, onComment, onGift, onFollow, onUserPress, onShare, onSaveMedia, onDelete, user, onView, followStatusMap, onImmerseInfo
 }: {
   item: Post; activePostId: string | null; onLike: (post: Post) => void; onComment: (post: Post) => void;
   onGift: (post: Post) => void; onFollow: (userId: string, isFollowing: boolean) => Promise<void>;
   onUserPress: (userId: string) => void; onShare: (post: Post) => void; onSaveMedia: (post: Post) => void;
+  onDelete: (post: Post) => void;
   user: any; onView: (postId: string) => void; followStatusMap: Map<string, boolean>;
   onImmerseInfo: () => void;
 }) {
@@ -599,6 +600,8 @@ function VideoPost({
   const [durationMs,       setDurationMs]       = useState(0);
   const [videoDisplaySize, setVideoDisplaySize] = useState<{ w: number; h: number } | null>(null);
   const [shouldLoad,       setShouldLoad]       = useState(false);
+  // ── End screen — shows after video finishes, with watermark + replay + follow
+  const [showEndScreen,    setShowEndScreen]    = useState(false);
 
   const isFollowing = followStatusMap.get(item.user_id) || false;
   const videoRef    = useRef<Video>(null);
@@ -609,20 +612,25 @@ function VideoPost({
   const hapticIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const effectKey        = item.video_effect || 'none';
   const effectInfo       = VIDEO_EFFECTS[effectKey] || VIDEO_EFFECTS['none'];
-const FX_TINT_MAP_V: Record<string, string> = {
-  fx_vhs: 'rgba(180,120,60,0.28)', fx_fire: 'rgba(255,80,0,0.32)',
-  fx_ice: 'rgba(80,160,255,0.30)', fx_neon_burn: 'rgba(0,255,180,0.28)',
-  fx_duotone_purple: 'rgba(120,0,220,0.38)', fx_duotone_gold: 'rgba(220,160,0,0.36)',
-  fx_light_leak: 'rgba(255,220,100,0.22)', fx_bleach: 'rgba(255,255,255,0.25)',
-  fx_noir_contrast: 'rgba(0,0,0,0.45)', fx_sunrise: 'rgba(255,120,30,0.28)',
-  fx_deep_ocean: 'rgba(0,60,180,0.35)', fx_lomo: 'rgba(120,0,0,0.30)',
-  fx_teal_orange: 'rgba(0,180,160,0.22)', fx_infrared: 'rgba(30,0,0,0.50)',
-  fx_velvet: 'rgba(180,0,120,0.22)', fx_grunge: 'rgba(60,40,20,0.40)',
-  fx_pastel: 'rgba(255,200,220,0.28)', fx_midnight: 'rgba(10,10,60,0.45)',
-  fx_chrome: 'rgba(180,180,180,0.30)', fx_pop_art: 'rgba(255,0,120,0.30)',
-  fx_cross_process: 'rgba(0,200,100,0.25)', fx_aura: 'rgba(180,100,255,0.25)',
-};
-const tintColor        = item.video_filter_tint || ((item as any).fx_effect ? FX_TINT_MAP_V[(item as any).fx_effect] || null : null) || effectInfo.tint || null;
+  // ✅ FIX: tintColor fallback chain:
+  // 1. video_filter_tint (explicit rgba saved since v5.2) — most reliable
+  // 2. effectInfo.tint (from VIDEO_EFFECTS map for effect-based tints)
+  // 3. FILTER_TINT_MAP[applied_filter] — fallback for older posts saved before
+  //    video_filter_tint was introduced, and for FX effects on older versions
+  const FILTER_TINT_MAP: Record<string, string> = {
+    beauty: 'rgba(255,200,200,0.18)', vintage: 'rgba(180,120,60,0.25)',
+    cool: 'rgba(100,180,255,0.22)',   warm: 'rgba(255,160,50,0.22)',
+    dramatic: 'rgba(0,0,0,0.35)',     bright: 'rgba(255,255,200,0.18)',
+    noir: 'rgba(0,0,0,0.5)',          neon: 'rgba(0,255,136,0.2)',
+    sunset: 'rgba(255,80,80,0.25)',   cinematic: 'rgba(20,10,40,0.45)',
+    golden: 'rgba(255,200,50,0.22)',  rose: 'rgba(255,100,150,0.22)',
+    glitch: 'rgba(255,0,80,0.15)',
+  };
+  const tintColor =
+    item.video_filter_tint ||
+    effectInfo.tint ||
+    (item.applied_filter && item.applied_filter !== 'original' ? FILTER_TINT_MAP[item.applied_filter] || null : null) ||
+    null;
   const playbackRate     = item.playback_rate ?? effectInfo.rate ?? 1.0;
   const effectBadge      = effectInfo.badge || null;
   const effectBadgeColor = effectInfo.badgeColor || '#fff';
@@ -693,14 +701,18 @@ const tintColor        = item.video_filter_tint || ((item as any).fx_effect ? FX
     if (isActive) {
       setShouldLoad(true);
       if (!viewedRef.current) { viewedRef.current = true; onView(item.id); }
+      // 50ms delay gives React one render cycle to mount the Video component
+      // before shouldPlay becomes true — prevents occasional black flash.
+      // Kept short so video starts as fast as possible even on slow networks.
       const t = setTimeout(async () => {
         setIsPlaying(true);
         videoRef.current?.setRateAsync(playbackRate, true).catch(() => {});
         if (isImmerse) { startImmerseGlow(); startHaptics(); await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); }
-      }, 80);
+      }, 50);
       return () => clearTimeout(t);
     } else {
       setIsPlaying(false);
+      setShowEndScreen(false);
       if (isImmerse) { stopImmerseGlow(); stopHaptics(); }
       const unloadTimer = setTimeout(() => {
         videoRef.current?.pauseAsync().catch(() => {});
@@ -725,10 +737,21 @@ const tintColor        = item.video_filter_tint || ((item as any).fx_effect ? FX
     setVideoDisplaySize({ w: nat.width * finalScale, h: nat.height * finalScale });
   }, []);
 
+  // ✅ PERF FIX: Throttle playback status updates to every 500ms.
+  // Without throttling, this fires 30-60 times/second and triggers React re-renders
+  // on every frame. On a 2GB phone this kills smooth playback.
+  const lastStatusUpdate = useRef(0);
   const handlePlaybackStatusUpdate = useCallback((status: AVPlaybackStatus) => {
     if (!status.isLoaded) return;
+    const now = Date.now();
+    if (now - lastStatusUpdate.current < 500 && !status.didJustFinish) return;
+    lastStatusUpdate.current = now;
     setPositionMs(status.positionMillis ?? 0);
     if (status.durationMillis) setDurationMs(status.durationMillis);
+    if (status.didJustFinish && !status.isLooping) {
+      setIsPlaying(false);
+      setShowEndScreen(true);
+    }
   }, []);
 
   const handleSeek = useCallback(async (ms: number) => {
@@ -763,9 +786,14 @@ const tintColor        = item.video_filter_tint || ((item as any).fx_effect ? FX
     catch (e) { console.error('Toggle mute error:', e); }
   };
 
+  // ✅ PERF FIX: Always render at full screen by default — don't wait for naturalSize.
+  // On 2GB Android devices, onReadyForDisplay fires late and the video renders black
+  // because { width: '100%', height: '100%' } inside an absolute-positioned container
+  // collapses to 0x0 until layout is complete. Using fixed pixel dimensions means the
+  // video renders immediately as soon as buffering starts, no black flash.
   const videoStyle = videoDisplaySize
     ? { width: videoDisplaySize.w, height: videoDisplaySize.h }
-    : { width: '100%' as const, height: '100%' as const };
+    : { width, height };
 
   return (
     <View style={styles.videoContainer}>
@@ -794,9 +822,9 @@ const tintColor        = item.video_filter_tint || ((item as any).fx_effect ? FX
         {isImmerse && isActive && (
           <Animated.View pointerEvents="none" style={[styles.immerseVignette, { opacity: immerseGlow.interpolate({ inputRange: [0, 1], outputRange: [0, 0.12] }) }]} />
         )}
-        {item.media_url && (
-          <Animated.View style={[styles.watermarkOverlay, { top: undefined, bottom: undefined, right: undefined, transform: [{ translateX: wmX }, { translateY: wmY }], opacity: wmOpacity, position: 'absolute' }]}>
-            <Image source={require('../../assets/images/icon.png')} style={styles.watermarkLogo} resizeMode="contain" />
+        {item.has_watermark && item.media_url && (
+          <Animated.View style={[styles.watermarkOverlay, { transform: [{ translateX: wmX }, { translateY: wmY }], opacity: wmOpacity, position: 'absolute', top: 0, left: 0 }]}>
+            <Image source={require('../../assets/images/adaptive-icon.png')} style={styles.watermarkLogo} resizeMode="contain" />
             <View><Text style={styles.watermarkText}>LumVibe</Text><Text style={styles.watermarkUsername}>@{item.username}</Text></View>
           </Animated.View>
         )}
@@ -885,8 +913,17 @@ const tintColor        = item.video_filter_tint || ((item as any).fx_effect ? FX
         {item.location && (<View style={styles.locationContainer}><Feather name="map-pin" size={12} color="#00ff88" /><Text style={styles.locationText}>{item.location}</Text></View>)}
 
         {/* ── MARKETPLACE SHOP NOW BUTTON ── */}
-        {item.vibe_type === 'marketplace' && (item as any).cloudinary_public_id?.startsWith('marketplace_listing_') && (() => {
-          const listingId = (item as any).cloudinary_public_id.replace('marketplace_listing_', '');
+        {item.vibe_type === 'marketplace' && (() => {
+          // Dual-path: new marketplace_listing_id column OR old cloudinary_public_id trick
+          const listingIdFromColumn = (item as any).marketplace_listing_id as string | null | undefined;
+          const listingIdFromPublicId = (item as any).cloudinary_public_id?.startsWith('marketplace_listing_')
+            ? (item as any).cloudinary_public_id.replace('marketplace_listing_', '')
+            : null;
+          const listingId = listingIdFromColumn || listingIdFromPublicId;
+          if (!listingId) return null;
+          const price = (item as any).marketplace_price
+            || item.caption?.match(/(\d+) coins/)?.[1]
+            || '';
           return (
             <TouchableOpacity
               style={videoShopStyles.shopBtn}
@@ -894,12 +931,27 @@ const tintColor        = item.video_filter_tint || ((item as any).fx_effect ? FX
               activeOpacity={0.85}
             >
               <Text style={videoShopStyles.shopBtnIcon}>🛍️</Text>
-              <Text style={videoShopStyles.shopBtnText}>Shop Now</Text>
+              <Text style={videoShopStyles.shopBtnText}>
+                Shop Now{price ? ` — ${price} coins` : ''}
+              </Text>
               <Feather name="chevron-right" size={14} color="#000" />
             </TouchableOpacity>
           );
         })()}
       </View>
+      {/* ── OWNER DELETE BUTTON — top right, only visible to post owner ── */}
+      {isOwnPost && (
+        <TouchableOpacity
+          style={styles.ownerDeleteBtn}
+          onPress={() => Alert.alert('Delete Video', 'Permanently delete this video? This cannot be undone.', [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Delete', style: 'destructive', onPress: () => onDelete(item) },
+          ])}
+          activeOpacity={0.8}
+        >
+          <Feather name="trash-2" size={18} color="#ff4444" />
+        </TouchableOpacity>
+      )}
       <View style={styles.actionsRight}>
         <TouchableOpacity style={styles.actionButtonRight} onPress={() => onLike(item)} activeOpacity={0.7}>
           <View style={styles.iconContainer}><Feather name="heart" size={32} color={isLiked ? '#00ff88' : '#fff'} /></View>
@@ -927,6 +979,108 @@ const tintColor        = item.video_filter_tint || ((item as any).fx_effect ? FX
         {item.coins_received > 0 && (<View style={styles.coinsOverlay}><MaterialCommunityIcons name="diamond" size={20} color="#ffd700" /><Text style={styles.coinsOverlayText}>{item.coins_received.toFixed(2)}</Text></View>)}
       </View>
       <VideoSeekBar positionMs={positionMs} durationMs={durationMs} onSeek={handleSeek} isVisible={isActive && durationMs > 0} isImmerse={isImmerse} />
+
+      {/* ── VIDEO END SCREEN — shows after video finishes, exactly like TikTok ── */}
+      {showEndScreen && isActive && (
+        <View style={endScreenStyles.overlay}>
+          <View style={endScreenStyles.bg} />
+
+          {/* LumVibe watermark — matches create.tsx VideoEndScreen */}
+          <View style={endScreenStyles.watermarkBlock} pointerEvents="none">
+            <Image source={require('../../assets/images/adaptive-icon.png')} style={endScreenStyles.watermarkIcon} resizeMode="contain" />
+            <Text style={endScreenStyles.watermarkTitle}>LumVibe</Text>
+            <Text style={endScreenStyles.watermarkSub}>Discover more creators on LumVibe</Text>
+          </View>
+
+          {/* Divider — matches create.tsx */}
+          <View style={endScreenStyles.divider} />
+
+          {/* Real live stats — likes, comments, coins, views */}
+          <View style={endScreenStyles.statsRow}>
+            <View style={endScreenStyles.statItem}>
+              <Feather name="heart" size={18} color="#00ff88" />
+              <Text style={endScreenStyles.statValue}>{item.likes_count.toLocaleString()}</Text>
+              <Text style={endScreenStyles.statLabel}>Likes</Text>
+            </View>
+            <View style={endScreenStyles.statDivider} />
+            <View style={endScreenStyles.statItem}>
+              <Feather name="message-circle" size={18} color="#00ff88" />
+              <Text style={endScreenStyles.statValue}>{item.comments_count.toLocaleString()}</Text>
+              <Text style={endScreenStyles.statLabel}>Comments</Text>
+            </View>
+            <View style={endScreenStyles.statDivider} />
+            <View style={endScreenStyles.statItem}>
+              <MaterialCommunityIcons name="gift-outline" size={18} color="#ffd700" />
+              <Text style={[endScreenStyles.statValue, { color: '#ffd700' }]}>{item.coins_received > 0 ? item.coins_received.toFixed(0) : '0'}</Text>
+              <Text style={endScreenStyles.statLabel}>Gifts</Text>
+            </View>
+            <View style={endScreenStyles.statDivider} />
+            <View style={endScreenStyles.statItem}>
+              <Feather name="eye" size={18} color="#00ff88" />
+              <Text style={endScreenStyles.statValue}>{item.views_count.toLocaleString()}</Text>
+              <Text style={endScreenStyles.statLabel}>Views</Text>
+            </View>
+          </View>
+
+          {/* Creator info + follow */}
+          <View style={endScreenStyles.creatorRow}>
+            {item.user_photo_url
+              ? <Image source={{ uri: item.user_photo_url }} style={endScreenStyles.creatorAvatar} />
+              : <View style={[endScreenStyles.creatorAvatar, endScreenStyles.avatarFallback]}><Feather name="user" size={18} color="#00ff88" /></View>
+            }
+            <View style={{ flex: 1 }}>
+              <Text style={endScreenStyles.creatorName}>{item.display_name}</Text>
+              <Text style={endScreenStyles.creatorUsername}>@{item.username}</Text>
+            </View>
+            {!isOwnPost ? (
+              <TouchableOpacity
+                style={[endScreenStyles.followBtn, isFollowing && endScreenStyles.followingBtn]}
+                onPress={handleFollow}
+                activeOpacity={0.8}
+              >
+                <Text style={[endScreenStyles.followBtnText, isFollowing && endScreenStyles.followingBtnText]}>
+                  {isFollowing ? 'Following' : '+ Follow'}
+                </Text>
+              </TouchableOpacity>
+            ) : (
+              /* Delete button for owner */
+              <TouchableOpacity
+                style={endScreenStyles.deleteBtn}
+                onPress={() => {
+                  setShowEndScreen(false);
+                  Alert.alert('Delete Post', 'Permanently delete this video? This cannot be undone.', [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'Delete', style: 'destructive', onPress: () => onDelete(item) },
+                  ]);
+                }}
+                activeOpacity={0.8}
+              >
+                <Feather name="trash-2" size={14} color="#ff4444" />
+                <Text style={endScreenStyles.deleteBtnText}>Delete</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+
+          {/* Replay button */}
+          <TouchableOpacity
+            style={endScreenStyles.replayBtn}
+            activeOpacity={0.85}
+            onPress={async () => {
+              setShowEndScreen(false);
+              setPositionMs(0);
+              try {
+                await videoRef.current?.setPositionAsync(0);
+                await videoRef.current?.setRateAsync(playbackRate, true);
+                await videoRef.current?.playAsync();
+                setIsPlaying(true);
+              } catch {}
+            }}
+          >
+            <Feather name="rotate-ccw" size={22} color="#000" />
+            <Text style={endScreenStyles.replayBtnText}>Replay</Text>
+          </TouchableOpacity>
+        </View>
+      )}
     </View>
   );
 }
@@ -963,7 +1117,7 @@ export default function VideosScreen() {
   const flatListRef  = useRef<FlatList>(null);
 
   const videoCacheRef        = useRef<{ data: FeedItem[]; timestamp: number } | null>(null);
-  const VIDEO_CACHE_DURATION = 30000;
+  const VIDEO_CACHE_DURATION = 90000; // 90s — feed feels instant on return
 
   // Viewer city for location boost in algorithm
   const viewerCity = useMemo(() => {
@@ -1039,9 +1193,14 @@ export default function VideosScreen() {
     isLoadingRef.current = true;
     try {
       const { data: postsData, error: postsError } = await supabase
-        .from('posts').select('*')
-        .eq('media_type', 'video').eq('is_published', true)
-        .order('created_at', { ascending: false }).limit(50);
+        .from('posts')
+        // ✅ FIX: added applied_filter to select — used as fallback tint for older posts
+        // that were saved before video_filter_tint was introduced.
+        .select('id,user_id,caption,media_url,watermarked_url,media_type,views_count,coins_received,saved_by,liked_by,location,music_name,music_artist,music_url,voice_duration,created_at,has_watermark,applied_filter,video_effect,video_filter_tint,playback_rate,is_immerse,haptic_pattern,spatial_audio,vibe_type,cloudinary_public_id,is_published,marketplace_listing_id,marketplace_price,marketplace_title')
+        .eq('media_type', 'video')
+        .or('is_published.is.null,is_published.eq.true')
+        .order('created_at', { ascending: false })
+        .limit(50);
 
       if (postsError) throw postsError;
       if (!postsData || postsData.length === 0) { setPosts([]); setFeedItems([]); setLoading(false); isLoadingRef.current = false; return; }
@@ -1077,7 +1236,15 @@ export default function VideosScreen() {
           views_count: p.views_count || 0, coins_received: p.coins_received || 0,
           liked_by: likes.users, location: p.location,
           music_name: p.music_name, music_artist: p.music_artist,
+          // ✅ FIX: music_url was fetched but never mapped — background music on
+          // video posts was always undefined, so nothing played when tapped.
+          music_url: p.music_url || null,
+          // ✅ FIX: voice_duration likewise needs mapping for audio post duration display.
+          voice_duration: p.voice_duration || null,
+          // 2705 FIX: applied_filter mapped so tintColor fallback works for older posts
+          applied_filter: p.applied_filter || 'original',
           created_at: p.created_at, has_watermark: p.has_watermark || false,
+          watermarked_url: p.watermarked_url || null,
           video_effect: p.video_effect || 'none', video_filter_tint: p.video_filter_tint || null,
           playback_rate: p.playback_rate || null, is_immerse: p.is_immerse ?? false,
           haptic_pattern: p.haptic_pattern ?? null, spatial_audio: p.spatial_audio ?? null,
@@ -1292,6 +1459,21 @@ export default function VideosScreen() {
   const handleReply       = useCallback((comment: Comment) => { setReplyingTo(comment); setCommentText(''); }, []);
   const handleCancelReply = useCallback(() => { setReplyingTo(null); setCommentText(''); }, []);
 
+  const handleDeletePost = useCallback(async (post: Post) => {
+    if (post.user_id !== userId) return;
+    try {
+      await supabase.from('likes').delete().eq('post_id', post.id);
+      await supabase.from('comments').delete().eq('post_id', post.id);
+      const { error } = await supabase.from('posts').delete().eq('id', post.id).eq('user_id', userId);
+      if (error) throw error;
+      setPosts(prev => prev.filter(p => p.id !== post.id));
+      setFeedItems(prev => prev.filter(item => {
+        if (isAd(item) || isWinnerCard(item)) return true;
+        return (item as Post).id !== post.id;
+      }));
+    } catch { Alert.alert('Error', 'Failed to delete. Please try again.'); }
+  }, [userId]);
+
   const handleFollow = useCallback(async (targetUserId: string, isFollowing: boolean) => {
     if (!userId) { Alert.alert(t.videos.loginRequired, t.videos.loginToFollow); return; }
     try {
@@ -1328,14 +1510,66 @@ export default function VideosScreen() {
 
   const handleSaveMedia = useCallback(async (post: Post) => {
     if (!post.media_url) return;
-    Alert.alert(t.videos.saveVideo, t.videos.saveVideoMsg, [
-      { text: t.common.cancel, style: 'cancel' },
-      { text: t.common.save, onPress: async () => {
-        try { const { status } = await MediaLibrary.requestPermissionsAsync(); if (status !== 'granted') { Alert.alert(t.videos.permissionDenied, t.videos.permissionMsg); return; } Alert.alert('Saving...', 'Video is being saved to your gallery'); }
-        catch (e: any) { Alert.alert('Error', 'Failed to save video'); }
-      }}
-    ]);
-  }, []);
+    Alert.alert(
+      t.videos.saveVideo,
+      'Save this video to your phone? It will include the LumVibe watermark.',
+      [
+        { text: t.common.cancel, style: 'cancel' },
+        { text: t.common.save, onPress: async () => {
+          try {
+            const { status } = await MediaLibrary.requestPermissionsAsync();
+            if (status !== 'granted') {
+              Alert.alert(t.videos.permissionDenied, t.videos.permissionMsg);
+              return;
+            }
+
+            if (!post.media_url) { Alert.alert('Error', 'No video URL found.'); return; }
+
+            // ── PICK THE BEST DOWNLOAD URL ─────────────────────────────────
+            // Priority 1: watermarked_url — stored at upload time via Cloudinary
+            //             eager transform (free on all Cloudinary plans).
+            //             The watermark is permanently baked into the video file
+            //             so it is visible when the user shares to WhatsApp,
+            //             TikTok, Instagram, or anywhere else.
+            // Priority 2: plain media_url fallback for old posts that were
+            //             posted before this fix was deployed (watermarked_url
+            //             will be null for those — graceful degradation).
+            const downloadUrl = post.watermarked_url || post.media_url;
+
+            const fileName = `lumvibe_${post.id}_${Date.now()}.mp4`;
+            const localUri = `${FileSystem.cacheDirectory}${fileName}`;
+
+            Alert.alert('\u2b07\ufe0f Downloading...', 'Saving video to your gallery...');
+
+            let downloadResult = await FileSystem.downloadAsync(downloadUrl, localUri);
+
+            // If the watermarked URL failed (rare CDN hiccup), retry with plain URL
+            if (downloadResult.status !== 200 && downloadUrl !== post.media_url) {
+              downloadResult = await FileSystem.downloadAsync(post.media_url, localUri);
+            }
+
+            if (downloadResult.status !== 200) {
+              Alert.alert('Error', 'Download failed. Please try again.');
+              return;
+            }
+
+            const asset = await MediaLibrary.createAssetAsync(downloadResult.uri);
+            await MediaLibrary.createAlbumAsync('LumVibe', asset, false);
+            await FileSystem.deleteAsync(downloadResult.uri, { idempotent: true });
+
+            Alert.alert(
+              '\u2705 Saved!',
+              post.watermarked_url
+                ? 'Video saved with LumVibe watermark to your gallery.'
+                : 'Video saved to your LumVibe gallery album.'
+            );
+          } catch (e: any) {
+            Alert.alert('Error', 'Failed to save video: ' + (e.message || 'Unknown error'));
+          }
+        }}
+      ]
+    );
+  }, [t]);
 
   const handleUserPress = useCallback((targetUserId: string) => { if (!targetUserId) return; router.push(`/user/${targetUserId}`); }, [router]);
 
@@ -1355,11 +1589,12 @@ export default function VideosScreen() {
         item={item as Post} activePostId={activePostId}
         onLike={handleLike} onComment={handleComment} onGift={handleGift}
         onFollow={handleFollow} onUserPress={handleUserPress} onShare={handleShare}
-        onSaveMedia={handleSaveMedia} user={user} onView={handleView} followStatusMap={followStatusMap}
+        onSaveMedia={handleSaveMedia} onDelete={handleDeletePost}
+        user={user} onView={handleView} followStatusMap={followStatusMap}
         onImmerseInfo={() => setImmerseInfoVisible(true)}
       />
     );
-  }, [activePostId, weeklyWinners, followStatusMap, handleLike, handleComment, handleGift, handleFollow, handleUserPress, handleShare, handleSaveMedia, handleView, user]);
+  }, [activePostId, weeklyWinners, followStatusMap, handleLike, handleComment, handleGift, handleFollow, handleUserPress, handleShare, handleSaveMedia, handleDeletePost, handleView, user]);
 
   if (loading) return (<View style={styles.loadingContainer}><ActivityIndicator size="large" color="#00ff88" /><Text style={styles.loadingText}>{t.videos.loadingVideos}</Text></View>);
 
@@ -1373,7 +1608,7 @@ export default function VideosScreen() {
         onViewableItemsChanged={onViewableItemsChanged} viewabilityConfig={viewabilityConfig}
         windowSize={FEED_SETTINGS.windowSize} maxToRenderPerBatch={FEED_SETTINGS.maxToRenderPerBatch}
         initialNumToRender={FEED_SETTINGS.initialNumToRender} updateCellsBatchingPeriod={FEED_SETTINGS.updateCellsBatchingPeriod}
-        removeClippedSubviews={false}
+        removeClippedSubviews={true}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -1529,6 +1764,39 @@ const videoShopStyles = StyleSheet.create({
   shopBtnText: { color: '#000', fontWeight: '700', fontSize: 13 },
 });
 
+// ─── END SCREEN STYLES ───────────────────────────────────────────────────────
+const endScreenStyles = StyleSheet.create({
+  overlay:          { ...StyleSheet.absoluteFillObject, zIndex: 50, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 24 },
+  bg:               { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.82)' },
+  watermarkBlock:   { alignItems: 'center', marginBottom: 20 },
+  watermarkIcon:    { width: 56, height: 56, borderRadius: 14, marginBottom: 6, borderWidth: 2, borderColor: '#00ff88' },
+  watermarkTitle:   { color: '#00ff88', fontSize: 24, fontWeight: '900', letterSpacing: 1 },
+  watermarkSub:     { color: 'rgba(255,255,255,0.4)', fontSize: 11, marginTop: 2, letterSpacing: 0.5 },
+  divider:          { width: '55%', height: 1, backgroundColor: '#00ff8833', marginBottom: 16, marginTop: 4 },
+  // Real live stats row
+  statsRow:         { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: 14, paddingVertical: 12, paddingHorizontal: 16, marginBottom: 16, width: '100%' },
+  statItem:         { flex: 1, alignItems: 'center', gap: 4 },
+  statValue:        { color: '#fff', fontSize: 15, fontWeight: '800' },
+  statLabel:        { color: '#666', fontSize: 10, fontWeight: '500' },
+  statDivider:      { width: 1, height: 32, backgroundColor: '#222' },
+  // Creator row
+  creatorRow:       { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 20, backgroundColor: 'rgba(255,255,255,0.06)', borderRadius: 16, padding: 14, width: '100%' },
+  creatorAvatar:    { width: 44, height: 44, borderRadius: 22, borderWidth: 1.5, borderColor: '#00ff88' },
+  avatarFallback:   { backgroundColor: '#111', justifyContent: 'center', alignItems: 'center' },
+  creatorName:      { color: '#fff', fontSize: 14, fontWeight: '700' },
+  creatorUsername:  { color: '#666', fontSize: 12, marginTop: 2 },
+  followBtn:        { backgroundColor: '#00ff88', borderRadius: 20, paddingHorizontal: 16, paddingVertical: 8 },
+  followingBtn:     { backgroundColor: 'transparent', borderWidth: 1.5, borderColor: '#00ff88' },
+  followBtnText:    { color: '#000', fontWeight: '800', fontSize: 13 },
+  followingBtnText: { color: '#00ff88' },
+  // Delete button for owner
+  deleteBtn:        { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: 'rgba(255,68,68,0.12)', borderRadius: 20, paddingHorizontal: 12, paddingVertical: 8, borderWidth: 1, borderColor: '#ff4444' },
+  deleteBtnText:    { color: '#ff4444', fontWeight: '700', fontSize: 13 },
+  // Replay button
+  replayBtn:        { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#00ff88', borderRadius: 28, paddingHorizontal: 32, paddingVertical: 14 },
+  replayBtnText:    { color: '#000', fontWeight: '900', fontSize: 16, letterSpacing: 0.5 },
+});
+
 const styles = StyleSheet.create({
   container:            { flex: 1, backgroundColor: '#000' },
   loadingContainer:     { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#000' },
@@ -1582,6 +1850,7 @@ const styles = StyleSheet.create({
   coinsOverlayText:     { color: '#ffd700', fontSize: 12, fontWeight: '600' },
   immerseSoundLabel:    { color: '#00cfff', fontSize: 10, fontWeight: '800' },
   adContainer:          { width, height, backgroundColor: '#0a0a0a', justifyContent: 'center', alignItems: 'center', padding: 20 },
+  ownerDeleteBtn:       { position: 'absolute', top: 52, right: 16, zIndex: 30, backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 20, padding: 8, borderWidth: 1, borderColor: 'rgba(255,68,68,0.5)' },
   immerseScreenBorder:  { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderWidth: 3, zIndex: 2, pointerEvents: 'none' },
   immerseVignette:      { ...StyleSheet.absoluteFillObject, backgroundColor: '#00cfff', zIndex: 2 },
   immerseBadge:         { position: 'absolute', top: 52, left: 12, zIndex: 15, flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#00cfff', borderRadius: 10, paddingHorizontal: 8, paddingVertical: 4 },

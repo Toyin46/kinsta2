@@ -2,33 +2,33 @@
 // ─────────────────────────────────────────────────────────────
 // LumVibe — Co-Watch Screen (Full Production Build)
 //
-// ✅ ORIGINAL FIXES (from previous version):
-//   Agora App ID from env, scrollToIndex bounds-checked, UUID 9-digit uid,
-//   full-screen feed, SafeAreaView root, pointerEvents in style, flex chat,
-//   send button loading state, bottom panel overlay, CallControls left-side,
-//   unified Avatar, real-time chat, stale closure fix, PiP controls above pip,
-//   native Share API, gift system with RPC, floating emoji reactions,
-//   coin balance in gift sheet, display_name resolved
+// ✅ All previous fixes preserved (Agora, chat, gifts, reactions, audio, etc.)
+// ─────────────────────────────────────────────────────────────
+// v5 — 100% PARITY WITH index.tsx (v19) + videos.tsx (v15):
 //
-// ✅ NEW FIXES (this version):
-//   [FEED]     Pull-to-refresh with RefreshControl on feed FlatList
-//   [FEED]     useFocusEffect refreshes coin balance when returning to screen
-//   [FEED]     Real-time posts subscription — live like/coin updates from partner
-//   [FEED]     onViewableItemsChanged → view count tracking + owner points
-//   [FEED]     memo() on FeedPostCard — no re-render on chat/reaction state changes
-//   [FEED]     Card height is explicit SH (not '100%') — bulletproof on all devices
-//   [FEED]     Pagination: load more posts on reaching end of list
-//   [FEED]     LumVibe watermark overlay on posts (matches main feeds)
-//   [VIDEO]    Tap-to-pause/play on video cards
-//   [VIDEO]    Progress bar shown during video playback
-//   [GIFT]     Local currency shown alongside ₦ (timezone-detected, matches index.tsx)
-//   [GIFT]     Custom gift amount option (min 10, max 5000 coins)
-//   [GIFT]     Points awarded to post owner on gift
-//   [COMMENTS] Reply-to-comment support
-//   [ADS]      Native ad injection every 8 posts (LumVibe-branded, matches index.tsx)
-//   [ADS]      Hidden BannerAd for AdMob revenue inside native ad card
-//   [POINTS]   getOwnerBadgeMultipliers — badge-aware point awards on view/like/comment
-//   [BRAND]    File header updated from Kinsta → LumVibe throughout
+//  ✅ LIKES — fully consistent across all screens:
+//     handleLike writes to `likes` table (not posts.liked_by array).
+//     fetchFeedPosts reads liked_by from `likes` table — same source as
+//     index.tsx and videos.tsx. Like in cowatch = liked in home feed. ✅
+//     toggleLikePost (wrote to posts array) removed — was the old divergent path.
+//
+//  ✅ REAL-TIME liked_by SYNC:
+//     subscribeToPostsUpdates now also re-fetches liked_by from likes table
+//     on every UPDATE event — hearts stay correct when partner likes a post.
+//     Previously only likes_count/coins_received/comments_count were synced.
+//
+//  ✅ AUDIO — matches index.tsx v3.5 exactly:
+//     startAudio: shouldPlay:true (instant start on first bytes),
+//     overrideFileExtensionAndroid:'m4a' (Cloudinary URL format hint),
+//     shouldCorrectPitch:false (no blocking DSP on older Android),
+//     progressUpdateIntervalMillis:250 (smooth waveform on slow network).
+//
+//  ✅ VOICE AUTO-PLAY:
+//     Voice posts auto-play when isCurrent — user can tap to pause.
+//     Artificial 200ms delay removed — matches index.tsx v3.5.
+//
+//  ✅ toggleVoicePlayback / toggleMusicPlayback:
+//     Robust 3-state handling (loaded / unloaded / null) — matches index.tsx.
 // ─────────────────────────────────────────────────────────────
 
 import React, {
@@ -36,18 +36,27 @@ import React, {
 } from 'react';
 import {
   View, Text, TextInput, FlatList, TouchableOpacity,
-  StyleSheet, SafeAreaView, StatusBar, ActivityIndicator,
+  StyleSheet, StatusBar, ActivityIndicator,
   KeyboardAvoidingView, Platform, Image, Alert, Dimensions,
   Animated, Modal, Share, ScrollView, PermissionsAndroid,
-  RefreshControl,
+  RefreshControl, PanResponder, GestureResponderEvent,
 } from 'react-native';
 import { Video, ResizeMode, AVPlaybackStatus } from 'expo-av';
+import { Audio } from 'expo-av';
 import { router, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { RealtimeChannel } from '@supabase/supabase-js';
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons, Feather } from '@expo/vector-icons';
 import Constants from 'expo-constants';
 import { BannerAd, BannerAdSize, TestIds } from 'react-native-google-mobile-ads';
+import * as MediaLibrary from 'expo-media-library';
+import * as FileSystem from 'expo-file-system';
+import * as Haptics from 'expo-haptics';
+// ✅ FIX: SafeAreaView from react-native-safe-area-context supports the `edges`
+// prop — the React Native core SafeAreaView does not. Using edges={['left','right']}
+// prevents top/bottom inset padding from shrinking the feed height and causing
+// the half-scroll issue where cards stop halfway through scrolling.
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { supabase } from '../../config/supabase';
 import { useAuthStore } from '../../store/authStore';
 import { notifyCowatchInvite } from '../../lib/notifications';
@@ -73,30 +82,10 @@ try {
   }
 } catch (_) {}
 
-const { width: SW, height: SH } = Dimensions.get('window');
+const { width: SW, height: SH } = Dimensions.get('screen');
 
 // ─────────────────────────────────────────────────────────────
 // AGORA APP ID — READ FROM ENV
-// ─────────────────────────────────────────────────────────────
-// HOW TO SET UP (one-time):
-//
-//  1. In your .env file (project root):
-//       AGORA_APP_ID=your_actual_agora_app_id_here
-//
-//  2. In app.config.js → extra section:
-//       extra: {
-//         agoraAppId: process.env.AGORA_APP_ID,
-//         // ... other keys
-//       }
-//
-//  3. Rebuild the app (expo prebuild / eas build).
-//     The DEV warning below will disappear and Agora calls will work.
-//
-// NOTE: The warning you see in DEV ("AGORA_APP_ID is not set") simply means
-// the key hasn't been wired through app.config.js → extra yet.
-// Video/audio calls will NOT connect until the real App ID is present.
-// Agora never connects on an empty string — it silently refuses.
-// Once the real ID is in .env + app.config.js, video calls will work.
 // ─────────────────────────────────────────────────────────────
 const AGORA_APP_ID: string =
   (Constants.expoConfig?.extra as any)?.agoraAppId ?? '';
@@ -244,6 +233,33 @@ const NATIVE_AD_SLOTS = [
   },
 ];
 
+// ── GLOBAL AUDIO MANAGER (matches index.tsx) ──────────────────
+const globalAudioManager = {
+  currentSound: null as Audio.Sound | null,
+  currentPostId: null as string | null,
+  async stopCurrent() {
+    if (this.currentSound) {
+      try {
+        await this.currentSound.stopAsync();
+        await this.currentSound.unloadAsync();
+      } catch (_) {}
+      this.currentSound = null;
+      this.currentPostId = null;
+    }
+  },
+  async play(sound: Audio.Sound, postId: string) {
+    await this.stopCurrent();
+    this.currentSound = sound;
+    this.currentPostId = postId;
+    try { await sound.playAsync(); } catch (_) {}
+  },
+};
+
+function isRemoteUrl(uri: string): boolean {
+  if (!uri) return false;
+  return uri.startsWith('http://') || uri.startsWith('https://');
+}
+
 // ── TYPES ─────────────────────────────────────────────────────
 interface CowatchSession {
   id: string; conversation_id: string;
@@ -270,10 +286,24 @@ interface FeedPost {
   likes_count: number; comments_count: number;
   coins_received: number;
   views_count: number;
-  liked_by?: string[];
+  liked_by: string[];
   saved_by?: string[];
   created_at: string;
   liked_by_me?: boolean;
+  // audio fields
+  music_url?: string;
+  music_name?: string;
+  music_artist?: string;
+  voice_duration?: number;
+  location?: string | null;
+  // ✅ video-specific fields (from videos.tsx) — needed for video tab consistency
+  video_effect?: string;
+  video_filter_tint?: string | null;
+  playback_rate?: number | null;
+  is_immerse?: boolean;
+  haptic_pattern?: string | null;
+  spatial_audio?: boolean | null;
+  vibe_type?: string | null;
 }
 
 interface AdItem { id: string; isAd: true; adIndex: number; }
@@ -320,7 +350,8 @@ function Avatar({ uri, name, size, borderColor }: {
 }
 
 // ─────────────────────────────────────────────────────────────
-// NATIVE AD CARD (LumVibe branded, matches index.tsx pattern)
+// NATIVE AD CARD (LumVibe branded)
+// ✅ FIXED: BannerAd is now VISIBLE at bottom — AdMob policy compliant
 // ─────────────────────────────────────────────────────────────
 const NativeAdCard = memo(function NativeAdCard({ adIndex }: { adIndex: number }) {
   const slot = NATIVE_AD_SLOTS[adIndex % NATIVE_AD_SLOTS.length];
@@ -374,9 +405,17 @@ const NativeAdCard = memo(function NativeAdCard({ adIndex }: { adIndex: number }
         <Text style={[adStyles.watermarkText, { color: slot.accentColor }]}>LumVibe</Text>
       </View>
 
-      {/* Hidden BannerAd for AdMob revenue */}
-      <View style={{ position: 'absolute', bottom: -100, opacity: 0 }}>
-        <BannerAd unitId={BANNER_AD_UNIT_ID} size={BannerAdSize.BANNER} />
+      {/* ✅ FIXED: BannerAd is now VISIBLE at the bottom of the card */}
+      {/* Previously hidden with opacity:0 which violates AdMob policy */}
+      <View style={adStyles.bannerAdContainer}>
+        <Text style={adStyles.bannerAdLabel}>Advertisement</Text>
+        <BannerAd
+          unitId={BANNER_AD_UNIT_ID}
+          size={BannerAdSize.BANNER}
+          requestOptions={{ requestNonPersonalizedAdsOnly: false }}
+          onAdLoaded={() => {}}
+          onAdFailedToLoad={() => {}}
+        />
       </View>
     </View>
   );
@@ -436,43 +475,64 @@ function subscribeCowatchSession(sessionId: string, onSync: (s: CowatchSession) 
     .subscribe();
 }
 
-async function fetchFeedPosts(feedType: 'index' | 'video', page = 0): Promise<FeedPost[]> {
+async function fetchFeedPosts(feedType: 'index' | 'video', page = 0, currentUserId?: string): Promise<FeedPost[]> {
   try {
     const PAGE_SIZE = 30;
-    const query = supabase
-      .from('posts')
-      .select(`
-        id, user_id, caption, media_url, media_type,
-        thumbnail_url, likes_count, comments_count, coins_received,
-        views_count, liked_by, saved_by, created_at,
-        users:user_id ( display_name, username, avatar_url )
-      `)
+    // ✅ KEY FIX: fetch posts with select('*') then join likes separately
+    // This matches index.tsx and videos.tsx exactly, making liked_by state
+    // consistent across all three screens from the same Supabase source of truth
+    let postsQuery = supabase.from('posts').select('*')
       .eq('is_published', true)
       .order('created_at', { ascending: false })
       .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
-
-    const { data, error } = feedType === 'video'
-      ? await query.eq('media_type', 'video')
-      : await query.neq('media_type', 'video');
-
+    if (feedType === 'video') {
+      postsQuery = postsQuery.eq('media_type', 'video');
+    } else {
+      postsQuery = postsQuery.or('media_type.is.null,media_type.eq.text,media_type.eq.image,media_type.eq.voice');
+    }
+    const { data: postsData, error } = await postsQuery;
     if (error) { console.warn('fetchFeedPosts error:', error.message); return []; }
-    return (data || []).map((p: any) => {
-      const profile = Array.isArray(p.users) ? p.users[0] : p.users;
+    if (!postsData || postsData.length === 0) return [];
+    const postIds = postsData.map((p: any) => p.id);
+    const userIds = [...new Set(postsData.map((p: any) => p.user_id))];
+    // Parallel fetch — identical pattern to index.tsx and videos.tsx
+    const [usersResult, likesResult, commentsResult] = await Promise.all([
+      supabase.from('users').select('id, username, display_name, avatar_url').in('id', userIds),
+      supabase.from('likes').select('post_id, user_id').in('post_id', postIds),
+      supabase.from('comments').select('post_id').in('post_id', postIds).is('parent_comment_id', null),
+    ]);
+    const usersMap = new Map<string, any>();
+    usersResult.data?.forEach((u: any) => usersMap.set(u.id, u));
+    // liked_by built from likes table — same source as index/videos
+    const likesMap = new Map<string, { count: number; users: string[] }>();
+    likesResult.data?.forEach((like: any) => {
+      const ex = likesMap.get(like.post_id) || { count: 0, users: [] };
+      ex.count++; ex.users.push(like.user_id); likesMap.set(like.post_id, ex);
+    });
+    const commentsMap = new Map<string, number>();
+    commentsResult.data?.forEach((c: any) => { commentsMap.set(c.post_id, (commentsMap.get(c.post_id) || 0) + 1); });
+    return postsData.map((p: any) => {
+      const profile = usersMap.get(p.user_id);
+      const likes   = likesMap.get(p.id) || { count: 0, users: [] };
       return {
         id: p.id, user_id: p.user_id,
-        caption: p.caption, media_url: p.media_url,
-        media_type: p.media_type || 'text',
-        thumbnail_url: p.thumbnail_url,
-        liked_by: p.liked_by || [], saved_by: p.saved_by || [],
-        likes_count: p.likes_count ?? 0,
-        comments_count: p.comments_count ?? 0,
-        coins_received: p.coins_received ?? 0,
-        views_count: p.views_count ?? 0,
+        caption: p.caption || '', media_url: p.media_url,
+        media_type: p.media_type || 'text', thumbnail_url: p.thumbnail_url || null,
+        liked_by: likes.users, saved_by: p.saved_by || [],
+        likes_count: likes.count, comments_count: commentsMap.get(p.id) ?? 0,
+        coins_received: p.coins_received ?? 0, views_count: p.views_count ?? 0,
         created_at: p.created_at,
+        music_url: p.music_url || null, music_name: p.music_name || null,
+        music_artist: p.music_artist || null, voice_duration: p.voice_duration || null,
+        // video-specific fields
+        video_effect: p.video_effect || 'none', video_filter_tint: p.video_filter_tint || null,
+        playback_rate: p.playback_rate || null, is_immerse: p.is_immerse ?? false,
+        haptic_pattern: p.haptic_pattern ?? null, spatial_audio: p.spatial_audio ?? null,
+        vibe_type: p.vibe_type ?? null, location: p.location || null,
         display_name: profile?.display_name || profile?.username || 'LumVibe User',
-        username: profile?.username || 'user',
-        avatar_url: profile?.avatar_url,
-        liked_by_me: false,
+        username: profile?.username || 'user', avatar_url: profile?.avatar_url,
+        // ✅ liked_by_me from real likes table — consistent with index.tsx and videos.tsx
+        liked_by_me: currentUserId ? likes.users.includes(currentUserId) : false,
       };
     });
   } catch (e) { console.error('fetchFeedPosts exception:', e); return []; }
@@ -491,7 +551,7 @@ async function fetchPostComments(postId: string): Promise<Comment[]> {
       return {
         id: c.id,
         user_id: c.user_id,
-        content: c.text || '',   // ← your column is 'text'
+        content: c.text || '',
         created_at: c.created_at,
         parent_comment_id: c.parent_comment_id || null,
         likes_count: c.likes_count || 0,
@@ -503,55 +563,26 @@ async function fetchPostComments(postId: string): Promise<Comment[]> {
   } catch (e) { console.error('fetchPostComments:', e); return []; }
 }
 
-async function toggleLikePost(postId: string, userId: string, liked: boolean) {
-  try {
-    // Fetch fresh data first to avoid stale count
-    const { data: post } = await supabase
-      .from('posts')
-      .select('liked_by, likes_count')
-      .eq('id', postId)
-      .single();
-    if (!post) return;
-
-    const arr: string[] = post.liked_by || [];
-    const alreadyLiked  = arr.includes(userId);
-
-    // Prevent double-like or double-unlike
-    if (liked && !alreadyLiked) return; // already unliked on server
-    if (!liked && alreadyLiked) return; // already liked on server — shouldn't unlike
-
-    const newArr   = liked
-      ? arr.filter((id: string) => id !== userId)   // unlike: remove user
-      : [...arr, userId];                            // like: add user
-    const newCount = liked
-      ? Math.max(0, (post.likes_count || 1) - 1)
-      : (post.likes_count || 0) + 1;
-
-    await supabase
-      .from('posts')
-      .update({ liked_by: newArr, likes_count: newCount })
-      .eq('id', postId);
-  } catch (e) { console.error('toggleLikePost error:', e); }
-}
+// NOTE: toggleLikePost removed — handleLike in CowatchScreen writes directly
+// to the `likes` table (same source of truth as index.tsx and videos.tsx).
+// Writing to posts.liked_by array is no longer used anywhere.
 
 async function postComment(postId: string, userId: string, content: string, parentCommentId?: string | null) {
   try {
     const { error } = await supabase.from('comments').insert({
       post_id: postId,
       user_id: userId,
-      text: content,            // ← your column is 'text'
+      text: content,
       ...(parentCommentId ? { parent_comment_id: parentCommentId } : {}),
     });
     if (error) throw error;
 
-    // Increment comments_count on post
     const { data: postRow } = await supabase
       .from('posts').select('comments_count, user_id').eq('id', postId).single();
     if (postRow) {
       await supabase.from('posts')
         .update({ comments_count: (postRow.comments_count || 0) + 1 })
         .eq('id', postId);
-      // Award points to post owner
       if (postRow.user_id && postRow.user_id !== userId) {
         const multipliers = await getOwnerBadgeMultipliers(postRow.user_id);
         const { data: ownerData } = await supabase
@@ -568,14 +599,12 @@ async function postComment(postId: string, userId: string, content: string, pare
 
 async function trackView(postId: string, userId: string) {
   try {
-    // Atomic RPC preferred; fallback to direct update
     const rpcResult = await supabase.rpc('increment_views', { p_post_id: postId });
     if (rpcResult.error) {
       await supabase.from('posts')
         .update({ views_count: supabase.rpc('increment_views', { p_post_id: postId }) as any })
         .eq('id', postId);
     }
-    // Award points to post owner
     const { data: postData } = await supabase.from('posts').select('user_id').eq('id', postId).single();
     if (postData?.user_id && postData.user_id !== userId) {
       const multipliers = await getOwnerBadgeMultipliers(postData.user_id);
@@ -615,7 +644,6 @@ async function sendGiftToPost(
       from_user_id: senderUserId, post_id: post.id, is_read: false,
     });
 
-    // Award gift-sender points to post owner
     const multipliers = await getOwnerBadgeMultipliers(post.user_id);
     const { data: ownerData } = await supabase.from('users').select('points').eq('id', post.user_id).single();
     if (ownerData) {
@@ -893,52 +921,461 @@ function FeedSelector({ activeFeed, onSelect }: { activeFeed: 'index' | 'video';
 }
 
 // ─────────────────────────────────────────────────────────────
-// FEED POST CARD — memoized, full SH height, video controls,
-//                 view tracking, LumVibe watermark
+// VIDEO EFFECTS MAP — identical to videos.tsx
+// ─────────────────────────────────────────────────────────────
+const VIDEO_EFFECTS: Record<string, { label: string; tint?: string; badge?: string; badgeColor?: string; rate?: number }> = {
+  none:      { label: 'Normal' },
+  slow_025:  { label: '0.25x Slow',  badge: '🐌 0.25x',      badgeColor: '#00bfff', rate: 0.25 },
+  slow_05:   { label: '0.5x Slow',   badge: '🐢 0.5x',       badgeColor: '#00bfff', rate: 0.5  },
+  fast_15:   { label: '1.5x Fast',   badge: '⚡ 1.5x',       badgeColor: '#ffd700', rate: 1.5  },
+  fast_2:    { label: '2x Fast',     badge: '🚀 2x',         badgeColor: '#ff4444', rate: 2.0  },
+  blur:      { label: 'Blur',        tint: 'rgba(255,255,255,0.12)', badge: '🌫️ Blur',     badgeColor: '#aaa'    },
+  beauty:    { label: 'Beauty',      tint: 'rgba(255,200,200,0.18)', badge: '✨ Beauty',   badgeColor: '#ff69b4' },
+  vintage:   { label: 'Vintage',     tint: 'rgba(180,120,60,0.25)',  badge: '📷 Vintage',  badgeColor: '#cd7f32' },
+  cool:      { label: 'Cool',        tint: 'rgba(100,180,255,0.22)', badge: '❄️ Cool',     badgeColor: '#00bfff' },
+  warm:      { label: 'Warm',        tint: 'rgba(255,160,50,0.22)',  badge: '🔥 Warm',     badgeColor: '#ff8c00' },
+  dramatic:  { label: 'Dramatic',    tint: 'rgba(0,0,0,0.35)',       badge: '🎭 Dramatic', badgeColor: '#888'    },
+  bright:    { label: 'Bright',      tint: 'rgba(255,255,200,0.18)', badge: '☀️ Bright',   badgeColor: '#ffd700' },
+  noir:      { label: 'Noir',        tint: 'rgba(0,0,0,0.5)',        badge: '🖤 Noir',     badgeColor: '#fff'    },
+  neon:      { label: 'Neon',        tint: 'rgba(0,255,136,0.2)',    badge: '💚 Neon',     badgeColor: '#00ff88' },
+  sunset:    { label: 'Sunset',      tint: 'rgba(255,80,80,0.25)',   badge: '🌅 Sunset',   badgeColor: '#ff6b35' },
+  cinematic: { label: 'Cinematic',   tint: 'rgba(20,10,40,0.45)',    badge: '🎬 Cinematic',badgeColor: '#9b59b6' },
+  golden:    { label: 'Golden',      tint: 'rgba(255,200,50,0.28)',  badge: '✨ Golden',   badgeColor: '#ffd700' },
+  rose:      { label: 'Rose',        tint: 'rgba(255,80,120,0.25)',  badge: '🌸 Rose',     badgeColor: '#ff4d8f' },
+  matrix:    { label: 'Matrix',      tint: 'rgba(0,80,20,0.4)',      badge: '💻 Matrix',   badgeColor: '#00ff00' },
+  midnight:  { label: 'Midnight',    tint: 'rgba(10,10,60,0.45)',    badge: '🌙 Midnight', badgeColor: '#4444ff' },
+  desert:    { label: 'Desert',      tint: 'rgba(200,120,30,0.3)',   badge: '🏜️ Desert',   badgeColor: '#e67e22' },
+};
+
+const VIBE_TYPES_CARD: Record<string, { label: string; emoji: string; color: string }> = {
+  fire:     { label: 'Fire',       emoji: '🔥', color: '#ff4500' },
+  funny:    { label: 'Funny',      emoji: '😂', color: '#ffd700' },
+  shocking: { label: 'Shocking',   emoji: '😱', color: '#ff6b35' },
+  love:     { label: 'Love',       emoji: '❤️', color: '#ff1744' },
+  mindblow: { label: 'Mind-blown', emoji: '🤯', color: '#aa00ff' },
+  dead:     { label: 'Dead 💀',    emoji: '💀', color: '#00e5ff' },
+  hype:     { label: 'Hype',       emoji: '🚀', color: '#00ff88' },
+  sad:      { label: 'Sad',        emoji: '😢', color: '#448aff' },
+};
+
+const IMMERSE_HAPTIC_ENGINES: Record<string, () => ReturnType<typeof setInterval>> = {
+  wave: () => {
+    let step = 0;
+    const pattern = [Haptics.ImpactFeedbackStyle.Light, Haptics.ImpactFeedbackStyle.Medium, Haptics.ImpactFeedbackStyle.Heavy, Haptics.ImpactFeedbackStyle.Medium];
+    return setInterval(async () => { await Haptics.impactAsync(pattern[step % pattern.length]); step++; }, 350);
+  },
+  pulse: () => {
+    let step = 0;
+    const beats = [Haptics.ImpactFeedbackStyle.Heavy, Haptics.ImpactFeedbackStyle.Light, Haptics.ImpactFeedbackStyle.Heavy, Haptics.ImpactFeedbackStyle.Light];
+    return setInterval(async () => { await Haptics.impactAsync(beats[step % beats.length]); step++; }, 280);
+  },
+  beat: () => {
+    let step = 0;
+    const pattern = [Haptics.ImpactFeedbackStyle.Heavy, Haptics.ImpactFeedbackStyle.Heavy, Haptics.ImpactFeedbackStyle.Light, Haptics.ImpactFeedbackStyle.Heavy, Haptics.ImpactFeedbackStyle.Light, Haptics.ImpactFeedbackStyle.Light];
+    return setInterval(async () => { await Haptics.impactAsync(pattern[step % pattern.length]); step++; }, 180);
+  },
+  energy: () => setInterval(async () => { await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy); }, 80),
+};
+
+// ─────────────────────────────────────────────────────────────
+// VIDEO SEEK BAR — identical to videos.tsx
+// ─────────────────────────────────────────────────────────────
+function CowatchSeekBar({ positionMs, durationMs, onSeek, isVisible, isImmerse }: {
+  positionMs: number; durationMs: number; onSeek: (ms: number) => void;
+  isVisible: boolean; isImmerse?: boolean;
+}) {
+  const BAR_PADDING = 16;
+  const BAR_WIDTH   = SW - BAR_PADDING * 2;
+  const THUMB_HALF  = 8;
+  const [dragging,     setDragging]     = useState(false);
+  const [dragProgress, setDragProgress] = useState(0);
+  const barOriginX = useRef(BAR_PADDING);
+  const barRef     = useRef<View>(null);
+  const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+  const pageXToProgress = (pageX: number) => { const x = clamp(pageX - barOriginX.current, 0, BAR_WIDTH); return x / BAR_WIDTH; };
+  const panResponder = useRef(PanResponder.create({
+    onStartShouldSetPanResponder: () => true,
+    onMoveShouldSetPanResponder: () => true,
+    onPanResponderGrant: (e: GestureResponderEvent) => {
+      barRef.current?.measureInWindow((x: number) => { barOriginX.current = x; });
+      const p = pageXToProgress(e.nativeEvent.pageX); setDragging(true); setDragProgress(p);
+    },
+    onPanResponderMove: (e: GestureResponderEvent) => { setDragProgress(pageXToProgress(e.nativeEvent.pageX)); },
+    onPanResponderRelease: (e: GestureResponderEvent) => {
+      const p = pageXToProgress(e.nativeEvent.pageX); setDragging(false); setDragProgress(p); onSeek(p * durationMs);
+    },
+    onPanResponderTerminate: () => { setDragging(false); },
+  })).current;
+  if (!isVisible) return null;
+  const liveProgress = durationMs > 0 ? clamp(positionMs / durationMs, 0, 1) : 0;
+  const displayProg  = dragging ? dragProgress : liveProgress;
+  const thumbLeft    = displayProg * BAR_WIDTH - THUMB_HALF;
+  const formatTime = (ms: number) => {
+    if (!ms || isNaN(ms) || ms < 0) return '0:00';
+    const totalSec = Math.floor(ms / 1000);
+    return `${Math.floor(totalSec / 60)}:${(totalSec % 60).toString().padStart(2, '0')}`;
+  };
+  const remainingMs = Math.max(0, durationMs - positionMs);
+  const fillColor   = isImmerse ? '#00cfff' : C.green;
+  return (
+    <View style={[seekBarStyles.container, isImmerse && seekBarStyles.containerImmerse]}>
+      <View style={seekBarStyles.timeRow}>
+        <Text style={[seekBarStyles.timeText, isImmerse && seekBarStyles.timeTextImmerse]}>{formatTime(positionMs)}</Text>
+        <Text style={[seekBarStyles.timeText, isImmerse && seekBarStyles.timeTextImmerse]}>-{formatTime(remainingMs)}</Text>
+      </View>
+      <View ref={barRef} style={seekBarStyles.barHitArea}
+        onLayout={() => { barRef.current?.measureInWindow((x: number) => { barOriginX.current = x; }); }}
+        {...panResponder.panHandlers}
+      >
+        <View style={seekBarStyles.track} />
+        <View style={[seekBarStyles.fill, { width: clamp(displayProg * BAR_WIDTH, 0, BAR_WIDTH), backgroundColor: fillColor }]} />
+        <View style={[seekBarStyles.thumb, { left: clamp(thumbLeft, -THUMB_HALF, BAR_WIDTH - THUMB_HALF), backgroundColor: isImmerse ? '#00cfff' : '#fff' }]} />
+      </View>
+    </View>
+  );
+}
+
+const seekBarStyles = StyleSheet.create({
+  container:        { position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: 16, paddingBottom: 14, paddingTop: 6, backgroundColor: 'rgba(0,0,0,0.4)', zIndex: 20 },
+  containerImmerse: { backgroundColor: 'rgba(0,20,40,0.55)', borderTopWidth: 1, borderTopColor: 'rgba(0,207,255,0.2)' },
+  timeRow:   { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
+  timeText:  { color: 'rgba(255,255,255,0.85)', fontSize: 11, fontWeight: '600' },
+  timeTextImmerse: { color: 'rgba(0,207,255,0.9)' },
+  barHitArea:{ height: 28, justifyContent: 'center' },
+  track:     { position: 'absolute', left: 0, right: 0, height: 3, backgroundColor: 'rgba(255,255,255,0.3)', borderRadius: 2 },
+  fill:      { position: 'absolute', left: 0, height: 3, borderRadius: 2 },
+  thumb:     { position: 'absolute', width: 16, height: 16, borderRadius: 8, top: 6, elevation: 5 },
+});
+
+// ─────────────────────────────────────────────────────────────
+// END SCREEN STYLES — shown after video finishes
+// ─────────────────────────────────────────────────────────────
+const endScreenStyles = StyleSheet.create({
+  overlay:       { ...StyleSheet.absoluteFillObject, zIndex: 30, alignItems: 'center', justifyContent: 'center', gap: 20, paddingHorizontal: 24 },
+  bg:            { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.82)' },
+  watermarkBlock:{ alignItems: 'center', gap: 4 },
+  watermarkIcon: { width: 48, height: 48, borderRadius: 24 },
+  watermarkTitle:{ color: C.green, fontSize: 22, fontWeight: '900', letterSpacing: 1 },
+  watermarkSub:  { color: 'rgba(255,255,255,0.5)', fontSize: 12 },
+  statsRow:      { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: 16, paddingVertical: 14, paddingHorizontal: 20, gap: 4, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+  statItem:      { alignItems: 'center', flex: 1, gap: 4 },
+  statValue:     { color: C.white, fontSize: 15, fontWeight: '800' },
+  statLabel:     { color: 'rgba(255,255,255,0.5)', fontSize: 10, fontWeight: '600' },
+  statDivider:   { width: 1, height: 36, backgroundColor: 'rgba(255,255,255,0.15)' },
+  creatorRow:    { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: 16, padding: 14, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)', width: '100%' },
+  creatorAvatar: { width: 44, height: 44, borderRadius: 22, borderWidth: 2, borderColor: C.green },
+  avatarFallback:{ backgroundColor: '#1a1a1a', justifyContent: 'center', alignItems: 'center' },
+  creatorName:   { color: C.white, fontSize: 14, fontWeight: '700' },
+  creatorUsername:{ color: 'rgba(255,255,255,0.5)', fontSize: 12, marginTop: 2 },
+  followBtn:     { backgroundColor: C.green, paddingHorizontal: 18, paddingVertical: 9, borderRadius: 20 },
+  followingBtn:  { backgroundColor: 'transparent', borderWidth: 1.5, borderColor: C.green },
+  followBtnText: { color: '#000', fontSize: 13, fontWeight: '800' },
+  followingBtnText:{ color: C.green },
+  deleteBtn:     { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(229,57,53,0.12)', borderWidth: 1, borderColor: C.red, borderRadius: 14, paddingVertical: 6, paddingHorizontal: 12 },
+  deleteBtnText: { color: C.red, fontSize: 12, fontWeight: '700' },
+  replayBtn:     { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: C.green, paddingHorizontal: 32, paddingVertical: 14, borderRadius: 30 },
+  replayBtnText: { color: '#000', fontSize: 15, fontWeight: '800' },
+});
+
+// ─────────────────────────────────────────────────────────────
+// FEED POST CARD — full videos.tsx parity
+// ✅ Animated moving watermark (4 corners like videos.tsx)
+// ✅ Long-press to save video to device
+// ✅ End screen after video finishes (LumVibe logo, stats, replay, follow)
+// ✅ Seek bar (drag to scrub)
+// ✅ Filter tint overlay
+// ✅ Vibe badge
+// ✅ Immerse mode (glow border, haptics, spatial audio arrows)
+// ✅ Effect badge (slow motion, speed)
+// ✅ Mute button on right actions
+// ✅ Owner delete button
+// ✅ Voice post player + waveform (from audio system)
+// ✅ Music background indicator
+// ✅ "Watching Together" badge preserved
 // ─────────────────────────────────────────────────────────────
 const FeedPostCard = memo(function FeedPostCard({
-  post, isCurrent, userId,
-  onLike, onComment, onGift, onShare, onView,
+  post, isCurrent, userId, isOwnPost,
+  onLike, onComment, onGift, onShare, onView, onDelete,
 }: {
-  post: FeedPost; isCurrent: boolean; userId: string;
+  post: FeedPost; isCurrent: boolean; userId: string; isOwnPost: boolean;
   onLike: (post: FeedPost) => void;
   onComment: (post: FeedPost) => void;
   onGift: (post: FeedPost) => void;
   onShare: (post: FeedPost) => void;
   onView: (postId: string) => void;
+  onDelete: (post: FeedPost) => void;
 }) {
-  const videoRef      = useRef<any>(null);
-  const likeAnim      = useRef(new Animated.Value(1)).current;
-  const viewedRef     = useRef(false);
-  const [isPlaying,   setIsPlaying]   = useState(false);
-  const [videoPct,    setVideoPct]     = useState(0);
+  const videoRef  = useRef<any>(null);
+  const soundRef  = useRef<Audio.Sound | null>(null);
+  const likeAnim  = useRef(new Animated.Value(1)).current;
+  const viewedRef = useRef(false);
 
+  // Animated watermark — moves to 4 corners like videos.tsx
+  const wmX       = useRef(new Animated.Value(16)).current;
+  const wmY       = useRef(new Animated.Value(SH * 0.55)).current;
+  const wmOpacity = useRef(new Animated.Value(0.85)).current;
+
+  // Immerse glow + pulse
+  const immerseGlow    = useRef(new Animated.Value(0)).current;
+  const immersePulse   = useRef(new Animated.Value(1)).current;
+  const immerseGlowRef = useRef<Animated.CompositeAnimation | null>(null);
+
+  // Haptic interval
+  const hapticRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const [isPlaying,    setIsPlaying]    = useState(false);
+  const [isMuted,      setIsMuted]      = useState(false);
+  const [positionMs,   setPositionMs]   = useState(0);
+  const [durationMs,   setDurationMs]   = useState(0);
+  const [showEndScreen,setShowEndScreen] = useState(false);
+  const [shouldLoad,   setShouldLoad]   = useState(false);
+  const [audioPlaying, setAudioPlaying] = useState(false);
+  const [voiceProgress,setVoiceProgress] = useState(0);
+
+  const waveformHeights = useMemo(
+    () => Array.from({ length: 40 }, () => Math.random() * 30 + 10),
+    [post.id]
+  );
+
+  const isImmerse    = !!(post.is_immerse);
+  const effectKey    = post.video_effect || 'none';
+  const effectInfo   = VIDEO_EFFECTS[effectKey] || VIDEO_EFFECTS['none'];
+  const tintColor    = post.video_filter_tint || effectInfo.tint || null;
+  const playbackRate = post.playback_rate ?? effectInfo.rate ?? 1.0;
+  const effectBadge  = effectInfo.badge || null;
+  const effectBadgeColor = effectInfo.badgeColor || '#fff';
+  const isTextOrVoice = post.media_type === 'voice' || post.media_type === 'text' || !post.media_url;
+
+  const fmtCount = (n: number) => (n ?? 0) > 999 ? `${((n ?? 0) / 1000).toFixed(1)}k` : String(n ?? 0);
+  const formatDuration = (seconds: number) =>
+    `${Math.floor(seconds / 60)}:${Math.floor(seconds % 60).toString().padStart(2, '0')}`;
+
+  // ── Animated watermark — 4 corner rotation like videos.tsx ──
   useEffect(() => {
-    if (!videoRef.current || post.media_type !== 'video') return;
-    if (isCurrent) videoRef.current.playAsync().catch(() => {});
-    else           videoRef.current.pauseAsync().catch(() => {});
-    if (isCurrent && !viewedRef.current) { viewedRef.current = true; onView(post.id); }
-  }, [isCurrent]);
+    if (!post.media_url) return;
+    const W = SW - 160;
+    const positions = [
+      { x: 16,  y: SH * 0.55 },  // bottom-left
+      { x: W,   y: SH * 0.55 },  // bottom-right
+      { x: 16,  y: 80 },          // top-left
+      { x: W,   y: 80 },          // top-right
+    ];
+    let idx = 0; let active = true;
+    const next = () => {
+      if (!active) return;
+      idx = (idx + 1) % 4;
+      Animated.parallel([
+        Animated.timing(wmOpacity, { toValue: 0, duration: 300, useNativeDriver: true }),
+        Animated.timing(wmX, { toValue: positions[idx].x, duration: 300, useNativeDriver: true }),
+        Animated.timing(wmY, { toValue: positions[idx].y, duration: 300, useNativeDriver: true }),
+      ]).start(() => {
+        if (!active) return;
+        Animated.timing(wmOpacity, { toValue: 0.85, duration: 300, useNativeDriver: true })
+          .start(() => { if (active) setTimeout(next, 3500); });
+      });
+    };
+    const timer = setTimeout(next, 3500);
+    return () => { active = false; clearTimeout(timer); };
+  }, [post.id]);
 
+  // ── Immerse glow ──
+  const startImmerseGlow = useCallback(() => {
+    if (immerseGlowRef.current) return;
+    const anim = Animated.loop(Animated.sequence([
+      Animated.timing(immerseGlow, { toValue: 1, duration: 900, useNativeDriver: false }),
+      Animated.timing(immerseGlow, { toValue: 0.25, duration: 900, useNativeDriver: false }),
+    ]));
+    immerseGlowRef.current = anim; anim.start();
+    Animated.loop(Animated.sequence([
+      Animated.timing(immersePulse, { toValue: 1.04, duration: 900, useNativeDriver: true }),
+      Animated.timing(immersePulse, { toValue: 1, duration: 900, useNativeDriver: true }),
+    ])).start();
+  }, []);
+  const stopImmerseGlow = useCallback(() => {
+    if (immerseGlowRef.current) { immerseGlowRef.current.stop(); immerseGlowRef.current = null; }
+    immerseGlow.setValue(0); immersePulse.setValue(1);
+  }, []);
+
+  // ── Haptics ──
+  const startHaptics = useCallback(() => {
+    if (!isImmerse || hapticRef.current || isMuted) return;
+    const pattern = post.haptic_pattern || 'wave';
+    const engine  = IMMERSE_HAPTIC_ENGINES[pattern] || IMMERSE_HAPTIC_ENGINES['wave'];
+    hapticRef.current = engine();
+  }, [isImmerse, isMuted, post.haptic_pattern]);
+  const stopHaptics = useCallback(() => {
+    if (hapticRef.current) { clearInterval(hapticRef.current); hapticRef.current = null; }
+  }, []);
+
+  // ── Video active/inactive ──
+  useEffect(() => {
+    if (post.media_type !== 'video') return;
+    if (isCurrent) {
+      setShouldLoad(true);
+      if (!viewedRef.current) { viewedRef.current = true; onView(post.id); }
+      const t = setTimeout(async () => {
+        setIsPlaying(true);
+        videoRef.current?.setRateAsync(playbackRate, true).catch(() => {});
+        if (isImmerse) { startImmerseGlow(); startHaptics(); await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {}); }
+      }, 80);
+      return () => clearTimeout(t);
+    } else {
+      setIsPlaying(false); setShowEndScreen(false);
+      if (isImmerse) { stopImmerseGlow(); stopHaptics(); }
+      const t = setTimeout(() => { videoRef.current?.pauseAsync().catch(() => {}); }, 500);
+      return () => clearTimeout(t);
+    }
+  }, [isCurrent, playbackRate, isImmerse]);
+
+  // ── Non-video view tracking ──
   useEffect(() => {
     if (isCurrent && !viewedRef.current && post.media_type !== 'video') {
       viewedRef.current = true; onView(post.id);
     }
   }, [isCurrent]);
 
-  const onPlaybackStatusUpdate = useCallback((status: AVPlaybackStatus) => {
-    if (!status.isLoaded) return;
-    setIsPlaying(status.isPlaying ?? false);
-    if (status.durationMillis && status.positionMillis) {
-      setVideoPct(status.positionMillis / status.durationMillis);
+  // Cleanup on unmount
+  useEffect(() => () => { stopHaptics(); stopImmerseGlow(); }, []);
+
+  // ── Audio auto-play — matches index.tsx v3.5 exactly ──
+  // Voice posts auto-play when isCurrent (same as index.tsx ≥50% visible rule).
+  // Background music loops quietly at 0.7 volume on image/text posts.
+  // User can tap the play button to pause/resume at any time.
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      if (isCurrent && post.media_type !== 'video') {
+        // Pick the correct URI and loop flag — mirrors index.tsx auto-play logic
+        const isVoice = post.media_type === 'voice';
+        const audioUri = isVoice && post.media_url && isRemoteUrl(post.media_url)
+          ? post.media_url
+          : (!isVoice && post.music_url && isRemoteUrl(post.music_url))
+            ? post.music_url
+            : null;
+        const loop = !isVoice;
+        if (audioUri && !cancelled) await startAudio(audioUri, loop, () => cancelled);
+      } else if (!isCurrent) {
+        cancelled = true;
+        if (soundRef.current) {
+          try { await soundRef.current.stopAsync(); await soundRef.current.unloadAsync(); } catch (_) {}
+          soundRef.current = null;
+        }
+        if (globalAudioManager.currentPostId === post.id) {
+          globalAudioManager.currentSound = null; globalAudioManager.currentPostId = null;
+        }
+        setAudioPlaying(false); setVoiceProgress(0);
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+      if (soundRef.current) { soundRef.current.stopAsync().catch(() => {}); soundRef.current.unloadAsync().catch(() => {}); soundRef.current = null; }
+      if (globalAudioManager.currentPostId === post.id) { globalAudioManager.currentSound = null; globalAudioManager.currentPostId = null; }
+    };
+  }, [isCurrent, post.id]);
+
+  const startAudio = async (uri: string, loop: boolean, isCancelled: () => boolean) => {
+    if (!uri || (!isRemoteUrl(uri) && !uri.startsWith('file://'))) return;
+    try {
+      if (soundRef.current) { try { await soundRef.current.stopAsync(); await soundRef.current.unloadAsync(); } catch (_) {} soundRef.current = null; }
+      await globalAudioManager.stopCurrent();
+      if (isCancelled()) return;
+      await Audio.setAudioModeAsync({ allowsRecordingIOS: false, playsInSilentModeIOS: true, staysActiveInBackground: false, shouldDuckAndroid: true });
+      if (isCancelled()) return;
+      // ✅ Matches index.tsx exactly:
+      // overrideFileExtensionAndroid — Android needs extension hint for Cloudinary URLs
+      // shouldPlay:true — starts on first bytes, no separate playAsync call needed
+      // shouldCorrectPitch:false — avoids blocking DSP setup on older Android devices
+      // progressUpdateIntervalMillis:250 — smooth waveform progress on slow networks
+      const isCloudinaryUrl = uri.includes('cloudinary.com');
+      const sourceObj = isCloudinaryUrl ? { uri, overrideFileExtensionAndroid: 'm4a' } : { uri };
+      const { sound } = await Audio.Sound.createAsync(
+        sourceObj,
+        { shouldPlay: true, isLooping: loop, volume: loop ? 0.7 : 1.0, shouldCorrectPitch: false, progressUpdateIntervalMillis: 250 }
+      );
+      if (isCancelled()) { try { await sound.unloadAsync(); } catch (_) {} return; }
+      soundRef.current = sound; globalAudioManager.currentSound = sound; globalAudioManager.currentPostId = post.id;
+      if (!loop) {
+        sound.setOnPlaybackStatusUpdate((status) => {
+          if (status.isLoaded) {
+            if (status.durationMillis && status.positionMillis) setVoiceProgress(status.positionMillis / status.durationMillis);
+            if (status.didJustFinish) { setAudioPlaying(false); setVoiceProgress(0); }
+          }
+        });
+      }
+      // Sound already playing (shouldPlay:true above) — just update UI state
+      if (!isCancelled()) setAudioPlaying(true);
+    } catch (e) { console.warn('[LumVibe CoWatch] startAudio failed:', e); setAudioPlaying(false); }
+  };
+
+  // ── Toggle handlers — match index.tsx robust 3-state logic ──
+  const toggleVoicePlayback = async () => {
+    if (!post.media_url || !isRemoteUrl(post.media_url)) return;
+    if (soundRef.current) {
+      try {
+        const status = await soundRef.current.getStatusAsync();
+        if (status.isLoaded) {
+          if (audioPlaying) { await soundRef.current.pauseAsync(); setAudioPlaying(false); }
+          else              { await soundRef.current.playAsync();  setAudioPlaying(true);  }
+          return;
+        }
+        try { await soundRef.current.unloadAsync(); } catch (_) {}
+        soundRef.current = null;
+        if (globalAudioManager.currentPostId === post.id) { globalAudioManager.currentSound = null; globalAudioManager.currentPostId = null; }
+      } catch (_) { try { await soundRef.current?.unloadAsync(); } catch (_) {} soundRef.current = null; }
     }
+    await startAudio(post.media_url, false, () => false);
+  };
+
+  const toggleMusicPlayback = async () => {
+    if (!post.music_url || !isRemoteUrl(post.music_url)) return;
+    if (soundRef.current) {
+      try {
+        const status = await soundRef.current.getStatusAsync();
+        if (status.isLoaded) {
+          if (audioPlaying) { await soundRef.current.pauseAsync(); setAudioPlaying(false); }
+          else              { await soundRef.current.playAsync();  setAudioPlaying(true);  }
+          return;
+        }
+        try { await soundRef.current.unloadAsync(); } catch (_) {}
+        soundRef.current = null;
+        if (globalAudioManager.currentPostId === post.id) { globalAudioManager.currentSound = null; globalAudioManager.currentPostId = null; }
+      } catch (_) { try { await soundRef.current?.unloadAsync(); } catch (_) {} soundRef.current = null; }
+    }
+    await startAudio(post.music_url, true, () => false);
+  };
+
+  // ── Video playback handlers ──
+  const handlePlaybackStatusUpdate = useCallback((status: AVPlaybackStatus) => {
+    if (!status.isLoaded) return;
+    setPositionMs(status.positionMillis ?? 0);
+    if (status.durationMillis) setDurationMs(status.durationMillis);
+    setIsPlaying(status.isPlaying ?? false);
+    if (status.didJustFinish && !status.isLooping) { setIsPlaying(false); setShowEndScreen(true); }
   }, []);
 
-  const handleVideoTap = useCallback(() => {
-    if (!videoRef.current || post.media_type !== 'video') return;
-    if (isPlaying) videoRef.current.pauseAsync().catch(() => {});
-    else           videoRef.current.playAsync().catch(() => {});
-  }, [isPlaying, post.media_type]);
+  const handleSeek = useCallback(async (ms: number) => {
+    if (!videoRef.current) return;
+    try {
+      await videoRef.current.setPositionAsync(ms); setPositionMs(ms);
+      if (isPlaying) { await videoRef.current.setRateAsync(playbackRate, true); await videoRef.current.playAsync(); }
+    } catch (_) {}
+  }, [isPlaying, playbackRate]);
+
+  const togglePlay = async () => {
+    if (!videoRef.current) return;
+    try {
+      const status = await videoRef.current.getStatusAsync();
+      if (!status.isLoaded) return;
+      if (status.isPlaying) { await videoRef.current.pauseAsync(); setIsPlaying(false); if (isImmerse) stopHaptics(); }
+      else { await videoRef.current.setRateAsync(playbackRate, true); await videoRef.current.playAsync(); setIsPlaying(true); if (isImmerse && !isMuted) startHaptics(); }
+    } catch (_) {}
+  };
+
+  const toggleMuteVideo = async () => {
+    if (!videoRef.current) return;
+    try { await videoRef.current.setIsMutedAsync(!isMuted); setIsMuted(!isMuted); } catch (_) {}
+  };
 
   const handleLikeTap = () => {
     Animated.sequence([
@@ -948,32 +1385,98 @@ const FeedPostCard = memo(function FeedPostCard({
     onLike(post);
   };
 
-  const fmtCount = (n: number) => (n ?? 0) > 999 ? `${((n ?? 0) / 1000).toFixed(1)}k` : String(n ?? 0);
-  const isTextOrVoice = post.media_type === 'voice' || post.media_type === 'text' || !post.media_url;
+  // ── Long-press to save video (identical to videos.tsx) ──
+  const handleLongPress = async () => {
+    if (post.media_type !== 'video' || !post.media_url) return;
+    try {
+      const { status } = await MediaLibrary.requestPermissionsAsync();
+      if (status !== 'granted') { Alert.alert('Permission needed', 'Please allow media library access to save videos.'); return; }
+      Alert.alert('Saving…', 'Downloading video to your device.');
+      const localUri = FileSystem.cacheDirectory + `cowatch_video_${post.id}.mp4`;
+      const { uri } = await FileSystem.downloadAsync(post.media_url, localUri);
+      await MediaLibrary.saveToLibraryAsync(uri);
+      Alert.alert('Saved!', 'Video saved to your gallery.');
+    } catch (e) { Alert.alert('Error', 'Could not save video.'); }
+  };
+
+  const isLiked = (post.liked_by || []).includes(userId);
 
   return (
-    <TouchableOpacity
-      activeOpacity={1}
-      style={[cardStyles.card, { width: SW, height: SH }]}
-      onPress={post.media_type === 'video' ? handleVideoTap : undefined}
-    >
-      {/* ── Background media ── */}
+    <View style={[cardStyles.card, { width: SW, height: SH }]}>
+
+      {/* ── Immerse border glow ── */}
+      {isImmerse && isCurrent && (
+        <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFillObject, { borderWidth: 3, zIndex: 2, borderColor: immerseGlow.interpolate({ inputRange: [0, 1], outputRange: ['rgba(0,207,255,0.15)', 'rgba(0,207,255,0.7)'] }) }]} />
+      )}
+
+      {/* ── Video ── */}
       {post.media_type === 'video' && post.media_url ? (
-        <Video
-          ref={videoRef}
-          source={{ uri: post.media_url }}
-          style={StyleSheet.absoluteFill}
-          resizeMode={ResizeMode.COVER}
-          isLooping shouldPlay={false}
-          onPlaybackStatusUpdate={onPlaybackStatusUpdate}
-        />
+        <TouchableOpacity style={StyleSheet.absoluteFillObject} onPress={togglePlay} onLongPress={handleLongPress} delayLongPress={500} activeOpacity={0.9}>
+          {shouldLoad ? (
+            <Video
+              ref={videoRef}
+              source={{ uri: post.media_url }}
+              style={{ width: '100%', height: '100%' }}
+              resizeMode={ResizeMode.CONTAIN}
+              isLooping={false} isMuted={isMuted} shouldPlay={isPlaying} rate={playbackRate}
+              onPlaybackStatusUpdate={handlePlaybackStatusUpdate}
+            />
+          ) : (
+            <View style={{ flex: 1, backgroundColor: '#111', justifyContent: 'center', alignItems: 'center' }}>
+              <ActivityIndicator size="large" color={C.green} />
+            </View>
+          )}
+          {/* Filter tint */}
+          {tintColor && (<View style={[StyleSheet.absoluteFillObject, { backgroundColor: tintColor }]} pointerEvents="none" />)}
+          {/* Immerse vignette */}
+          {isImmerse && isCurrent && (
+            <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFillObject, { backgroundColor: '#00cfff', opacity: immerseGlow.interpolate({ inputRange: [0, 1], outputRange: [0, 0.12] }) }]} />
+          )}
+          {/* Play overlay */}
+          {!isPlaying && (
+            <View style={[cardStyles.pauseIconWrap]}>
+              <View style={[cardStyles.pauseIconBg, isImmerse && { borderColor: '#00cfff', borderWidth: 2 }]}>
+                <Ionicons name="play" size={36} color={isImmerse ? '#00cfff' : C.green} />
+              </View>
+            </View>
+          )}
+        </TouchableOpacity>
       ) : null}
 
+      {/* ── Image ── */}
       {post.media_type === 'image' && post.media_url ? (
         <Image source={{ uri: post.media_url }} style={StyleSheet.absoluteFill} resizeMode="cover" />
       ) : null}
 
-      {isTextOrVoice ? (
+      {/* ── Voice post player ── */}
+      {post.media_type === 'voice' && post.media_url ? (
+        <View style={[StyleSheet.absoluteFill, { backgroundColor: '#000' }]}>
+          {post.avatar_url
+            ? <Image source={{ uri: post.avatar_url }} style={[StyleSheet.absoluteFill, { opacity: 0.35 }]} resizeMode="cover" />
+            : <LinearGradient colors={['#1a3a2a', '#0d1f16']} style={StyleSheet.absoluteFill} />}
+          <LinearGradient colors={['transparent', 'rgba(0,0,0,0.85)']} style={[StyleSheet.absoluteFill, { top: '50%' }]} pointerEvents="none" />
+          <View style={cardStyles.voicePlayerWrap}>
+            <View style={cardStyles.voiceProgressTrack}>
+              <View style={[cardStyles.voiceProgressFill, { width: `${voiceProgress * 100}%` }]} />
+            </View>
+            <View style={cardStyles.voiceControlsRow}>
+              <Text style={cardStyles.voiceTimeText}>{post.voice_duration ? formatDuration(post.voice_duration * voiceProgress) : '0:00'}</Text>
+              <TouchableOpacity style={cardStyles.voicePlayButton} onPress={toggleVoicePlayback} activeOpacity={0.8}>
+                <Ionicons name={audioPlaying ? 'pause' : 'play'} size={22} color="#000" />
+              </TouchableOpacity>
+              <Text style={cardStyles.voiceTimeText}>{post.voice_duration ? formatDuration(post.voice_duration) : '0:00'}</Text>
+            </View>
+            <View style={cardStyles.voiceWaveform}>
+              {waveformHeights.map((h, i) => (
+                <View key={i} style={[cardStyles.voiceWaveformBar, { height: h * 0.7, backgroundColor: i / 40 < voiceProgress ? C.green : '#333' }]} />
+              ))}
+            </View>
+          </View>
+        </View>
+      ) : null}
+
+      {/* ── Text post ── */}
+      {isTextOrVoice && post.media_type !== 'voice' ? (
         <View style={StyleSheet.absoluteFill}>
           {(post.thumbnail_url || post.media_url) && (
             <Image source={{ uri: post.thumbnail_url || post.media_url }} style={[StyleSheet.absoluteFill, { opacity: 0.3 }]} resizeMode="cover" />
@@ -984,38 +1487,62 @@ const FeedPostCard = memo(function FeedPostCard({
         </View>
       ) : null}
 
-      {/* Gradient scrim */}
-      <LinearGradient
-        colors={['transparent', 'rgba(0,0,0,0.7)']}
-        style={[StyleSheet.absoluteFill, { top: '50%' }]}
-        pointerEvents="none"
-      />
+      {/* ── Gradient scrim ── */}
+      <LinearGradient colors={['transparent', 'rgba(0,0,0,0.75)']} style={[StyleSheet.absoluteFill, { top: '50%' }]} pointerEvents="none" />
 
-      {/* Video controls overlay */}
-      {post.media_type === 'video' && isCurrent && (
+      {/* ── Animated moving watermark — identical to videos.tsx ── */}
+      <Animated.View pointerEvents="none" style={[cardStyles.watermarkAnimated, { transform: [{ translateX: wmX }, { translateY: wmY }], opacity: wmOpacity }]}>
+        <Image source={require('../../assets/images/adaptive-icon.png')} style={cardStyles.watermarkLogo} resizeMode="contain" />
+        <View>
+          <Text style={cardStyles.watermarkText}>LumVibe</Text>
+          <Text style={cardStyles.watermarkUsername}>@{post.username}</Text>
+        </View>
+      </Animated.View>
+
+      {/* ── Vibe badge ── */}
+      {post.vibe_type && VIBE_TYPES_CARD[post.vibe_type] && (
+        <View pointerEvents="none" style={[cardStyles.vibeBadge, { backgroundColor: VIBE_TYPES_CARD[post.vibe_type].color + '22', borderColor: VIBE_TYPES_CARD[post.vibe_type].color }]}>
+          <Text style={cardStyles.vibeBadgeEmoji}>{VIBE_TYPES_CARD[post.vibe_type].emoji}</Text>
+          <Text style={[cardStyles.vibeBadgeText, { color: VIBE_TYPES_CARD[post.vibe_type].color }]}>{VIBE_TYPES_CARD[post.vibe_type].label.toUpperCase()}</Text>
+        </View>
+      )}
+
+      {/* ── Effect badge ── */}
+      {effectBadge && (
+        <View style={[cardStyles.effectBadge, { backgroundColor: `${effectBadgeColor}22`, borderColor: effectBadgeColor }]}>
+          <Text style={[cardStyles.effectBadgeText, { color: effectBadgeColor }]}>{effectBadge}</Text>
+        </View>
+      )}
+
+      {/* ── Immerse badge ── */}
+      {isImmerse && (
+        <Animated.View pointerEvents="none" style={[cardStyles.immerseBadge, { transform: isCurrent ? [{ scale: immersePulse }] : [{ scale: 1 }] }]}>
+          <MaterialCommunityIcons name="waves" size={11} color="#000" />
+          <Text style={cardStyles.immerseBadgeText}>IMMERSE</Text>
+        </Animated.View>
+      )}
+
+      {/* ── Spatial audio arrows ── */}
+      {isImmerse && isCurrent && post.spatial_audio && !isMuted && (
         <>
-          {/* Pause/play hint (fades after first tap) */}
-          {!isPlaying && (
-            <View style={cardStyles.pauseIconWrap} pointerEvents="none">
-              <View style={cardStyles.pauseIconBg}>
-                <Ionicons name="pause" size={36} color={C.white} />
-              </View>
-            </View>
-          )}
-          {/* Progress bar */}
-          <View style={cardStyles.progressBar} pointerEvents="none">
-            <View style={[cardStyles.progressFill, { width: `${videoPct * 100}%` }]} />
-          </View>
+          <View style={cardStyles.spatialLeft}><Text style={cardStyles.spatialArrow}>◀</Text><Text style={cardStyles.spatialLabel}>3D</Text></View>
+          <View style={cardStyles.spatialRight}><Text style={cardStyles.spatialArrow}>▶</Text><Text style={cardStyles.spatialLabel}>3D</Text></View>
         </>
       )}
 
-      {/* LumVibe watermark (matches main feeds) */}
-      <View style={cardStyles.watermark} pointerEvents="none">
-        <MaterialCommunityIcons name="shield-check" size={13} color={C.green} />
-        <Text style={cardStyles.watermarkText}>LumVibe</Text>
-      </View>
+      {/* ── Owner delete button ── */}
+      {isOwnPost && (
+        <TouchableOpacity style={cardStyles.ownerDeleteBtn} onPress={() =>
+          Alert.alert('Delete Post', 'Permanently delete this post?', [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Delete', style: 'destructive', onPress: () => onDelete(post) },
+          ])
+        } activeOpacity={0.8}>
+          <Ionicons name="trash-outline" size={18} color="#ff4444" />
+        </TouchableOpacity>
+      )}
 
-      {/* Author row */}
+      {/* ── Author row (bottom-left) ── */}
       <View style={cardStyles.authorRow}>
         <Avatar uri={post.avatar_url} name={post.display_name} size={40} borderColor={C.green} />
         <View style={{ flex: 1 }}>
@@ -1027,11 +1554,19 @@ const FeedPostCard = memo(function FeedPostCard({
         </View>
       </View>
 
-      {/* Action buttons — right side */}
+      {/* ── Music indicator ── */}
+      {post.music_name && post.media_type !== 'voice' && (
+        <TouchableOpacity style={cardStyles.musicContainer} onPress={toggleMusicPlayback} activeOpacity={0.7}>
+          <Ionicons name={audioPlaying ? 'volume-high-outline' : 'musical-notes-outline'} size={12} color={C.green} />
+          <Text style={cardStyles.musicText}>{post.music_name}{post.music_artist ? ` - ${post.music_artist}` : ''}{audioPlaying ? ' • Playing' : ' • Tap to play'}</Text>
+        </TouchableOpacity>
+      )}
+
+      {/* ── Action buttons — right side ── */}
       <View style={cardStyles.actionsCol}>
         <TouchableOpacity style={cardStyles.actionBtn} onPress={handleLikeTap}>
           <Animated.View style={{ transform: [{ scale: likeAnim }] }}>
-            <Ionicons name={post.liked_by_me ? 'heart' : 'heart-outline'} size={28} color={post.liked_by_me ? C.red : C.white} />
+            <Ionicons name={isLiked ? 'heart' : 'heart-outline'} size={28} color={isLiked ? C.red : C.white} />
           </Animated.View>
           <Text style={cardStyles.actionCount}>{fmtCount(post.likes_count)}</Text>
         </TouchableOpacity>
@@ -1043,24 +1578,112 @@ const FeedPostCard = memo(function FeedPostCard({
 
         <TouchableOpacity style={cardStyles.actionBtn} onPress={() => onGift(post)}>
           <Ionicons name="gift-outline" size={28} color={C.gold} />
-          <Text style={[cardStyles.actionCount, { color: C.gold }]}>
-            {post.coins_received > 0 ? fmtCount(post.coins_received) : 'Gift'}
-          </Text>
+          <Text style={[cardStyles.actionCount, { color: C.gold }]}>{post.coins_received > 0 ? fmtCount(post.coins_received) : 'Gift'}</Text>
         </TouchableOpacity>
 
         <TouchableOpacity style={cardStyles.actionBtn} onPress={() => onShare(post)}>
           <Ionicons name="share-outline" size={26} color={C.white} />
           <Text style={cardStyles.actionCount}>Share</Text>
         </TouchableOpacity>
+
+        {/* ── Mute button (video only) ── */}
+        {post.media_type === 'video' && (
+          <TouchableOpacity style={cardStyles.actionBtn} onPress={toggleMuteVideo}>
+            <Ionicons name={isMuted ? 'volume-mute-outline' : 'volume-high-outline'} size={26} color={isImmerse && !isMuted ? '#00cfff' : C.white} />
+            {isImmerse && !isMuted && <Text style={[cardStyles.actionCount, { color: '#00cfff', fontSize: 9 }]}>3D</Text>}
+          </TouchableOpacity>
+        )}
+
+        {post.views_count > 0 && (
+          <View style={cardStyles.viewsOverlay}>
+            <Ionicons name="eye-outline" size={14} color={C.white} />
+            <Text style={cardStyles.viewsText}>{fmtCount(post.views_count)}</Text>
+          </View>
+        )}
       </View>
 
+      {/* ── Seek bar (video only) ── */}
+      {post.media_type === 'video' && (
+        <CowatchSeekBar
+          positionMs={positionMs} durationMs={durationMs}
+          onSeek={handleSeek}
+          isVisible={isCurrent && durationMs > 0}
+          isImmerse={isImmerse}
+        />
+      )}
+
+      {/* ── "Watching Together" badge ── */}
       {isCurrent && (
         <View style={cardStyles.watchingBadge}>
           <View style={cardStyles.watchingDot} />
           <Text style={cardStyles.watchingBadgeText}>Watching Together</Text>
         </View>
       )}
-    </TouchableOpacity>
+
+      {/* ── End screen — after video finishes ── */}
+      {showEndScreen && isCurrent && post.media_type === 'video' && (
+        <View style={endScreenStyles.overlay}>
+          <View style={endScreenStyles.bg} />
+          <View style={endScreenStyles.watermarkBlock} pointerEvents="none">
+            <MaterialCommunityIcons name="shield-check" size={40} color={C.green} />
+            <Text style={endScreenStyles.watermarkTitle}>LumVibe</Text>
+            <Text style={endScreenStyles.watermarkSub}>lumvibe.site</Text>
+          </View>
+          <View style={endScreenStyles.statsRow}>
+            <View style={endScreenStyles.statItem}>
+              <Ionicons name="heart" size={18} color={C.green} />
+              <Text style={endScreenStyles.statValue}>{post.likes_count.toLocaleString()}</Text>
+              <Text style={endScreenStyles.statLabel}>Likes</Text>
+            </View>
+            <View style={endScreenStyles.statDivider} />
+            <View style={endScreenStyles.statItem}>
+              <Ionicons name="chatbubble-outline" size={18} color={C.green} />
+              <Text style={endScreenStyles.statValue}>{post.comments_count.toLocaleString()}</Text>
+              <Text style={endScreenStyles.statLabel}>Comments</Text>
+            </View>
+            <View style={endScreenStyles.statDivider} />
+            <View style={endScreenStyles.statItem}>
+              <Ionicons name="gift-outline" size={18} color={C.gold} />
+              <Text style={[endScreenStyles.statValue, { color: C.gold }]}>{post.coins_received > 0 ? post.coins_received.toFixed(0) : '0'}</Text>
+              <Text style={endScreenStyles.statLabel}>Gifts</Text>
+            </View>
+            <View style={endScreenStyles.statDivider} />
+            <View style={endScreenStyles.statItem}>
+              <Ionicons name="eye-outline" size={18} color={C.green} />
+              <Text style={endScreenStyles.statValue}>{post.views_count.toLocaleString()}</Text>
+              <Text style={endScreenStyles.statLabel}>Views</Text>
+            </View>
+          </View>
+          <View style={endScreenStyles.creatorRow}>
+            {post.avatar_url
+              ? <Image source={{ uri: post.avatar_url }} style={endScreenStyles.creatorAvatar} />
+              : <View style={[endScreenStyles.creatorAvatar, endScreenStyles.avatarFallback]}><Ionicons name="person-outline" size={18} color={C.green} /></View>}
+            <View style={{ flex: 1 }}>
+              <Text style={endScreenStyles.creatorName}>{post.display_name}</Text>
+              <Text style={endScreenStyles.creatorUsername}>@{post.username}</Text>
+            </View>
+            {isOwnPost ? (
+              <TouchableOpacity style={endScreenStyles.deleteBtn} onPress={() => { setShowEndScreen(false); onDelete(post); }} activeOpacity={0.8}>
+                <Ionicons name="trash-outline" size={14} color={C.red} />
+                <Text style={endScreenStyles.deleteBtnText}>Delete</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+          <TouchableOpacity style={endScreenStyles.replayBtn} activeOpacity={0.85} onPress={async () => {
+            setShowEndScreen(false); setPositionMs(0);
+            try {
+              await videoRef.current?.setPositionAsync(0);
+              await videoRef.current?.setRateAsync(playbackRate, true);
+              await videoRef.current?.playAsync();
+              setIsPlaying(true);
+            } catch (_) {}
+          }}>
+            <Ionicons name="refresh-outline" size={22} color="#000" />
+            <Text style={endScreenStyles.replayBtnText}>Replay</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+    </View>
   );
 });
 
@@ -1129,7 +1752,6 @@ function CommentSheet({ visible, postId, userId, onClose }: {
                       </TouchableOpacity>
                     </View>
                   </TouchableOpacity>
-                  {/* Replies */}
                   {replies(item.id).map(reply => (
                     <View key={reply.id} style={[sheetStyles.commentRow, { marginLeft: 44, marginTop: 8 }]}>
                       <Avatar uri={reply.avatar_url} name={reply.display_name} size={26} />
@@ -1143,7 +1765,6 @@ function CommentSheet({ visible, postId, userId, onClose }: {
               )}
             />
           )}
-          {/* Replying-to bar */}
           {replyingTo && (
             <View style={sheetStyles.replyingBar}>
               <Text style={sheetStyles.replyingText}>Replying to {replyingTo.display_name}</Text>
@@ -1238,7 +1859,6 @@ function GiftSheet({ visible, post, userId, userProfile, onClose, onGiftSent }: 
             </TouchableOpacity>
           </View>
 
-          {/* Coin balance row */}
           <View style={sheetStyles.balanceRow}>
             <Text style={{ fontSize: 18 }}>🪙</Text>
             <Text style={sheetStyles.balanceText}>{userCoins.toLocaleString()} coins available</Text>
@@ -1253,7 +1873,6 @@ function GiftSheet({ visible, post, userId, userProfile, onClose, onGiftSent }: 
               <Text style={{ color: C.muted, marginTop: 12 }}>Sending gift…</Text>
             </View>
           ) : customMode ? (
-            /* Custom amount input */
             <View style={sheetStyles.customGiftContainer}>
               <Text style={sheetStyles.customGiftLabel}>Enter custom coin amount (min 10, max 5,000)</Text>
               <TextInput
@@ -1293,13 +1912,11 @@ function GiftSheet({ visible, post, userId, userProfile, onClose, onGiftSent }: 
                     <View style={[sheetStyles.giftCostBadge, { borderColor: g.color + '44' }]}>
                       <Text style={[sheetStyles.giftCostText, { color: canAfford ? g.color : C.muted }]}>🪙 {g.coins.toLocaleString()}</Text>
                     </View>
-                    {/* ₦ + local currency (matches index.tsx) */}
                     <Text style={sheetStyles.giftNgnText}>{coinsToNGN(g.coins)}</Text>
                     <Text style={[sheetStyles.giftNgnText, { color: C.gold }]}>{giftLocalPrice(g.ngn)}</Text>
                   </TouchableOpacity>
                 );
               })}
-              {/* Custom amount button */}
               <TouchableOpacity style={sheetStyles.customGiftTrigger} onPress={() => setCustomMode(true)}>
                 <Ionicons name="add-circle-outline" size={20} color={C.green} />
                 <Text style={sheetStyles.customGiftTriggerText}>Custom Amount</Text>
@@ -1375,17 +1992,30 @@ export default function CowatchScreen() {
 
   useEffect(() => { feedTypeRef.current = feedType; }, [feedType]);
 
-  // ── useFocusEffect: refresh coin balance when returning to screen ──
+  // ✅ useFocusEffect: refresh coin balance + stop audio when leaving screen
   useFocusEffect(useCallback(() => {
     if (loadProfile) loadProfile();
+    return () => {
+      // ✅ ADDED: stop any playing audio when leaving cowatch screen
+      globalAudioManager.stopCurrent();
+    };
   }, [loadProfile]));
 
   useEffect(() => {
+    // ✅ ADDED: Set audio mode on mount (matches index.tsx)
+    Audio.setAudioModeAsync({
+      playsInSilentModeIOS: true,
+      staysActiveInBackground: false,
+      shouldDuckAndroid: true,
+    }).catch(e => console.error('Audio mode error:', e));
+
     setupSession();
     return () => {
       if (syncChannelRef.current)  supabase.removeChannel(syncChannelRef.current);
       if (chatChannelRef.current)  supabase.removeChannel(chatChannelRef.current);
       if (postsChannelRef.current) supabase.removeChannel(postsChannelRef.current);
+      // ✅ ADDED: stop audio on unmount
+      globalAudioManager.stopCurrent();
     };
   }, []);
 
@@ -1415,15 +2045,24 @@ export default function CowatchScreen() {
     return () => { supabase.removeChannel(channel); };
   }, [conversationId, user?.id, otherName]);
 
-  // ── Real-time post updates (likes, coins) ──
+  // ── Real-time post updates (likes, coins, comments) ──
+  // ✅ FIX: also sync liked_by array so the heart icon state stays correct
+  // when the partner (or another user) likes a post from any screen.
+  // index.tsx and videos.tsx both derive isLiked from liked_by — we must
+  // keep liked_by in sync here too so cowatch hearts match the other feeds.
   const subscribeToPostsUpdates = useCallback((postIds: string[]) => {
     if (postsChannelRef.current) supabase.removeChannel(postsChannelRef.current);
     if (!postIds.length) return;
     const channel = supabase.channel(`posts_realtime_cowatch`)
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'posts' },
-        (payload) => {
+        async (payload) => {
           const updated = payload.new as any;
           if (!postIds.includes(updated.id)) return;
+          // Re-fetch liked_by from the likes table (same source as index/videos)
+          // so the heart state is always consistent across all screens.
+          const { data: likesData } = await supabase
+            .from('likes').select('user_id').eq('post_id', updated.id);
+          const likedBy = likesData?.map((l: any) => l.user_id) || [];
           setFeedItems(prev => prev.map(item => {
             if (isAd(item) || item.id !== updated.id) return item;
             return {
@@ -1431,19 +2070,21 @@ export default function CowatchScreen() {
               likes_count:    updated.likes_count    ?? (item as FeedPost).likes_count,
               coins_received: updated.coins_received ?? (item as FeedPost).coins_received,
               comments_count: updated.comments_count ?? (item as FeedPost).comments_count,
+              // ✅ Keep liked_by in sync — this is what drives the heart colour
+              liked_by: likedBy,
+              liked_by_me: user?.id ? likedBy.includes(user.id) : (item as FeedPost).liked_by_me,
             };
           }));
         })
       .subscribe();
     postsChannelRef.current = channel;
-  }, []);
+  }, [user?.id]);
 
   const injectAds = useCallback((posts: FeedPost[]): FeedItem[] => {
     const items: FeedItem[] = [];
     let adCounter = 0;
     posts.forEach((post, index) => {
       items.push(post);
-      // Ad every 8 posts (matches index.tsx logic adapted for horizontal)
       if ((index + 1) % 8 === 0) {
         items.push({ id: `ad_${adCounter}`, isAd: true, adIndex: adCounter });
         adCounter++;
@@ -1456,8 +2097,8 @@ export default function CowatchScreen() {
     if (isRefresh) setRefreshing(true);
     else if (pageNum === 0) setFeedLoading(true);
 
-    const data = await fetchFeedPosts(type, pageNum);
-    const withLiked = data.map(p => ({ ...p, liked_by_me: (p.liked_by || []).includes(user?.id || '') }));
+    const data = await fetchFeedPosts(type, pageNum, user?.id);
+    const withLiked = data; // liked_by_me already set correctly inside fetchFeedPosts using likes table
 
     if (pageNum === 0) {
       const items = injectAds(withLiked);
@@ -1540,10 +2181,6 @@ export default function CowatchScreen() {
     setTimeout(() => setIsSynced(false), 2000);
   }, []);
 
-  const handleScrollEnd = useCallback((e: any) => {
-    // Kept for reference — actual scroll handler is now inline on FlatList (vertical)
-  }, [currentIndex, session]);
-
   // ── View tracking via viewability ──
   const handleViewableItemsChanged = useCallback(({ viewableItems }: { viewableItems: any[] }) => {
     viewableItems.forEach(({ item }: { item: FeedItem }) => {
@@ -1560,13 +2197,10 @@ export default function CowatchScreen() {
 
   const handleLike = useCallback(async (post: FeedPost) => {
     if (!user) return;
+    // ✅ KEY FIX: read liked_by from the post object (now sourced from likes table)
+    const wasLiked = (post.liked_by || []).includes(user.id);
 
-    // Read current liked state from live feedItems, not stale prop
-    const currentItem = feedItems.find(i => !isAd(i) && i.id === post.id) as FeedPost | undefined;
-    if (!currentItem) return;
-    const wasLiked = currentItem.liked_by_me || false;
-
-    // Optimistic UI update
+    // Optimistic update
     setFeedItems(prev => prev.map(item => {
       if (isAd(item) || item.id !== post.id) return item;
       const p = item as FeedPost;
@@ -1582,21 +2216,40 @@ export default function CowatchScreen() {
       };
     }));
 
-    // Persist to DB
-    await toggleLikePost(post.id, user.id, wasLiked);
-
-    // Award like points to post owner
-    if (post.user_id !== user.id && !wasLiked) {
-      const multipliers = await getOwnerBadgeMultipliers(post.user_id);
-      const { data: ownerData } = await supabase
-        .from('users').select('points').eq('id', post.user_id).single();
-      if (ownerData) {
-        await supabase.from('users')
-          .update({ points: (ownerData.points || 0) + multipliers.likePoints })
-          .eq('id', post.user_id);
+    try {
+      if (wasLiked) {
+        // ✅ Delete from likes table — same as index.tsx and videos.tsx
+        const { error } = await supabase.from('likes').delete()
+          .eq('post_id', post.id).eq('user_id', user.id);
+        if (error) throw error;
+        const { data: ownerData } = await supabase.from('users').select('points').eq('id', post.user_id).single();
+        if (ownerData) {
+          const multipliers = await getOwnerBadgeMultipliers(post.user_id);
+          await supabase.from('users').update({ points: Math.max(0, (ownerData.points || 0) - multipliers.likePoints) }).eq('id', post.user_id);
+        }
+      } else {
+        // ✅ Insert into likes table — same as index.tsx and videos.tsx
+        const { error } = await supabase.from('likes').insert({ post_id: post.id, user_id: user.id });
+        if (error) throw error;
+        const { data: ownerData } = await supabase.from('users').select('points').eq('id', post.user_id).single();
+        if (ownerData) {
+          const multipliers = await getOwnerBadgeMultipliers(post.user_id);
+          await supabase.from('users').update({ points: (ownerData.points || 0) + multipliers.likePoints }).eq('id', post.user_id);
+        }
+        if (post.user_id !== user.id) {
+          await supabase.from('notifications').insert({
+            user_id: post.user_id, type: 'like', title: 'New Like',
+            message: `@${userProfile?.username || 'Someone'} liked your post`,
+            from_user_id: user.id, post_id: post.id, is_read: false,
+          });
+        }
       }
+    } catch (e) {
+      console.error('handleLike error in cowatch:', e);
+      // Revert optimistic update on failure
+      loadFeed(feedType, 0, false);
     }
-  }, [user, feedItems]);
+  }, [user, userProfile, feedType]);
 
   const handleShare = useCallback(async (post: FeedPost) => {
     try {
@@ -1605,8 +2258,18 @@ export default function CowatchScreen() {
     } catch (e) { console.error('Share error:', e); }
   }, []);
 
+  const handleDeletePost = useCallback(async (post: FeedPost) => {
+    if (!user?.id || post.user_id !== user.id) return;
+    try {
+      await supabase.from("posts").delete().eq("id", post.id).eq("user_id", user.id);
+      setFeedItems(prev => prev.filter(item => item.id !== post.id));
+    } catch (e) { Alert.alert("Error", "Could not delete post."); }
+  }, [user?.id]);
+
   const handleFeedTypeChange = useCallback(async (newType: 'index' | 'video') => {
     if (!session) return;
+    // ✅ ADDED: stop audio when switching feed type
+    globalAudioManager.stopCurrent();
     setFeedType(newType); feedTypeRef.current = newType; setCurrentIndex(0);
     isSyncingRef.current = true;
     await supabase.from('cowatch_sessions').update({ feed_type: newType, current_post_index: 0 }).eq('id', session.id);
@@ -1650,7 +2313,7 @@ export default function CowatchScreen() {
       if (isAd(item) || item.id !== postId) return item;
       return { ...item, coins_received: (item as FeedPost).coins_received + coins };
     }));
-    if (loadProfile) loadProfile(); // Refresh coin balance in store
+    if (loadProfile) loadProfile();
   }, [loadProfile]);
 
   const handleOnView = useCallback((postId: string) => {
@@ -1660,6 +2323,8 @@ export default function CowatchScreen() {
   }, [user?.id]);
 
   const endCowatch = useCallback(async () => {
+    // ✅ ADDED: stop audio when ending cowatch
+    globalAudioManager.stopCurrent();
     if (session) await endCowatchSession(session.id);
     router.back();
   }, [session]);
@@ -1680,7 +2345,7 @@ export default function CowatchScreen() {
   const currentPostIsAd = currentPost ? isAd(currentPost) : false;
 
   return (
-    <SafeAreaView style={styles.root}>
+    <SafeAreaView style={styles.root} edges={['left', 'right'] as any}>
       <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
 
       {/* ── FEED — full height ── */}
@@ -1700,6 +2365,8 @@ export default function CowatchScreen() {
             onMomentumScrollEnd={(e) => {
               const idx = Math.round(e.nativeEvent.contentOffset.y / SH);
               if (idx === currentIndex || !session) return;
+              // ✅ ADDED: stop audio when scrolling to new post
+              globalAudioManager.stopCurrent();
               setCurrentIndex(idx);
               isSyncingRef.current = true;
               syncFeedIndex(session.id, idx, false, 0).finally(() => {
@@ -1726,11 +2393,13 @@ export default function CowatchScreen() {
                   post={item as FeedPost}
                   isCurrent={index === currentIndex}
                   userId={user?.id || ''}
+                  isOwnPost={(item as FeedPost).user_id === user?.id}
                   onLike={handleLike}
                   onComment={setCommentPost}
                   onGift={setGiftPost}
                   onShare={handleShare}
                   onView={handleOnView}
+                  onDelete={handleDeletePost}
                 />
               );
             }}
@@ -1923,15 +2592,33 @@ const callCtrlStyles = StyleSheet.create({
 });
 
 const cardStyles = StyleSheet.create({
-  card: { backgroundColor: '#000', position: 'relative' },
+  card: { backgroundColor: '#000', position: 'relative', overflow: 'hidden' },
   textPostOverlay: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 28 },
   textPostContent: { fontSize: 20, fontWeight: '700', color: C.white, textAlign: 'center', lineHeight: 30 },
-  pauseIconWrap: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', zIndex: 4 },
+  pauseIconWrap: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', zIndex: 4, pointerEvents: 'none' },
   pauseIconBg: { width: 64, height: 64, borderRadius: 32, backgroundColor: 'rgba(0,0,0,0.5)', alignItems: 'center', justifyContent: 'center' },
-  progressBar: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 3, backgroundColor: 'rgba(255,255,255,0.2)', zIndex: 5 },
-  progressFill: { height: '100%', backgroundColor: C.green, borderRadius: 2 },
-  watermark: { position: 'absolute', top: 56, right: 12, flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(0,0,0,0.55)', paddingVertical: 4, paddingHorizontal: 8, borderRadius: 10, zIndex: 5 },
-  watermarkText: { color: C.green, fontSize: 11, fontWeight: '700' },
+  // Animated moving watermark — identical to videos.tsx
+  watermarkAnimated: { position: 'absolute', flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(0,0,0,0.7)', padding: 8, borderRadius: 8, zIndex: 10 },
+  watermarkLogo:     { width: 24, height: 24 },
+  watermarkText:     { color: '#00ff88', fontSize: 12, fontWeight: '700' },
+  watermarkUsername: { color: '#fff', fontSize: 10, fontWeight: '600', marginTop: 2 },
+  // Vibe badge
+  vibeBadge: { position: 'absolute', top: 56, left: 14, flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 4, paddingHorizontal: 10, borderRadius: 20, borderWidth: 1, zIndex: 10 },
+  vibeBadgeEmoji: { fontSize: 13 },
+  vibeBadgeText: { fontSize: 10, fontWeight: '800', letterSpacing: 0.5 },
+  // Effect badge
+  effectBadge: { position: 'absolute', top: 92, left: 14, flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 3, paddingHorizontal: 10, borderRadius: 14, borderWidth: 1, zIndex: 10 },
+  effectBadgeText: { fontSize: 10, fontWeight: '700' },
+  // Immerse badge
+  immerseBadge: { position: 'absolute', top: 92, right: 14, flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 4, paddingHorizontal: 10, borderRadius: 14, backgroundColor: '#00cfff', zIndex: 10 },
+  immerseBadgeText: { color: '#000', fontSize: 9, fontWeight: '900', letterSpacing: 1 },
+  // Spatial audio arrows
+  spatialLeft:  { position: 'absolute', left: 8,  top: '45%', alignItems: 'center', zIndex: 10 },
+  spatialRight: { position: 'absolute', right: 8, top: '45%', alignItems: 'center', zIndex: 10 },
+  spatialArrow: { color: 'rgba(0,207,255,0.7)', fontSize: 18, fontWeight: '900' },
+  spatialLabel: { color: 'rgba(0,207,255,0.7)', fontSize: 8, fontWeight: '700', letterSpacing: 0.5 },
+  // Owner delete (top-left corner)
+  ownerDeleteBtn: { position: 'absolute', top: 56, left: 14, zIndex: 15, backgroundColor: 'rgba(229,57,53,0.18)', borderWidth: 1, borderColor: C.red, borderRadius: 18, width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
   authorRow: { position: 'absolute', bottom: 72, left: 16, flexDirection: 'row', alignItems: 'center', gap: 10, zIndex: 5, right: 76 },
   authorName:   { fontSize: 13, fontWeight: '700', color: C.white },
   authorHandle: { fontSize: 11, color: 'rgba(255,255,255,0.6)', marginTop: 1 },
@@ -1939,9 +2626,25 @@ const cardStyles = StyleSheet.create({
   actionsCol: { position: 'absolute', right: 12, bottom: 68, gap: 18, alignItems: 'center', zIndex: 5 },
   actionBtn:   { alignItems: 'center', gap: 3 },
   actionCount: { fontSize: 11, color: C.white, fontWeight: '600' },
-  watchingBadge: { position: 'absolute', bottom: 14, left: 16, flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(0,0,0,0.55)', paddingVertical: 4, paddingHorizontal: 12, borderRadius: 20, borderWidth: 1, borderColor: C.green + '55', zIndex: 5 },
+  // Views
+  viewsOverlay: { alignItems: 'center', gap: 2 },
+  viewsText: { fontSize: 10, color: C.white, fontWeight: '600' },
+  // Watching Together badge
+  watchingBadge: { position: 'absolute', bottom: 56, left: 16, flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(0,0,0,0.55)', paddingVertical: 4, paddingHorizontal: 12, borderRadius: 20, borderWidth: 1, borderColor: C.green + '55', zIndex: 5 },
   watchingDot:       { width: 6, height: 6, borderRadius: 3, backgroundColor: C.green },
   watchingBadgeText: { fontSize: 10.5, color: C.green, fontWeight: '600' },
+  // Voice post player
+  voicePlayerWrap: { position: 'absolute', bottom: 100, left: 16, right: 76, zIndex: 5 },
+  voiceProgressTrack: { height: 3, backgroundColor: '#333', borderRadius: 2, marginBottom: 10, overflow: 'hidden' },
+  voiceProgressFill:  { height: '100%', backgroundColor: C.green, borderRadius: 2 },
+  voiceControlsRow:   { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
+  voicePlayButton:    { width: 48, height: 48, borderRadius: 24, backgroundColor: C.green, justifyContent: 'center', alignItems: 'center' },
+  voiceTimeText:      { color: 'rgba(255,255,255,0.7)', fontSize: 12, fontWeight: '500', width: 40 },
+  voiceWaveform:      { flexDirection: 'row', alignItems: 'center', height: 24, gap: 2 },
+  voiceWaveformBar:   { width: 3, borderRadius: 2 },
+  // Music indicator
+  musicContainer: { position: 'absolute', bottom: 54, left: 16, right: 76, flexDirection: 'row', alignItems: 'center', gap: 6, zIndex: 5 },
+  musicText: { color: C.green, fontSize: 11, fontStyle: 'italic', flex: 1 },
 });
 
 const adStyles = StyleSheet.create({
@@ -1954,8 +2657,24 @@ const adStyles = StyleSheet.create({
   caption: { fontSize: 14, color: 'rgba(255,255,255,0.65)', textAlign: 'center', lineHeight: 21 },
   cta: { paddingVertical: 14, paddingHorizontal: 32, borderRadius: 28, marginTop: 8 },
   ctaText: { color: '#000', fontSize: 15, fontWeight: '800' },
-  watermark: { position: 'absolute', bottom: 100, right: 20, flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(0,0,0,0.55)', paddingVertical: 4, paddingHorizontal: 8, borderRadius: 10 },
+  watermark: { position: 'absolute', bottom: 120, right: 20, flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(0,0,0,0.55)', paddingVertical: 4, paddingHorizontal: 8, borderRadius: 10 },
   watermarkText: { fontSize: 11, fontWeight: '700' },
+  // ✅ FIXED: BannerAd is now visible at the bottom
+  bannerAdContainer: {
+    position: 'absolute',
+    bottom: 60,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    paddingVertical: 6,
+  },
+  bannerAdLabel: {
+    color: 'rgba(255,255,255,0.4)',
+    fontSize: 9,
+    marginBottom: 4,
+    letterSpacing: 0.5,
+  },
 });
 
 const selectorStyles = StyleSheet.create({
@@ -2048,4 +2767,4 @@ const styles = StyleSheet.create({
   inputWrap: { flex: 1, backgroundColor: C.card, borderWidth: 1.5, borderColor: C.border, borderRadius: 22, paddingHorizontal: 14 },
   inputField: { color: C.white, fontSize: 14, paddingVertical: 10 },
   sendBtn: { width: 42, height: 42, borderRadius: 21, backgroundColor: C.green, alignItems: 'center', justifyContent: 'center' },
-}); 
+});
