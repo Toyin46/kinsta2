@@ -353,7 +353,7 @@ function Avatar({ uri, name, size, borderColor }: {
 // NATIVE AD CARD (LumVibe branded)
 // ✅ FIXED: BannerAd is now VISIBLE at bottom — AdMob policy compliant
 // ─────────────────────────────────────────────────────────────
-const NativeAdCard = memo(function NativeAdCard({ adIndex }: { adIndex: number }) {
+const NativeAdCard = memo(function NativeAdCard({ adIndex, itemHeight = SH }: { adIndex: number; itemHeight?: number }) {
   const slot = NATIVE_AD_SLOTS[adIndex % NATIVE_AD_SLOTS.length];
   const pulse = useRef(new Animated.Value(1)).current;
 
@@ -367,7 +367,7 @@ const NativeAdCard = memo(function NativeAdCard({ adIndex }: { adIndex: number }
   }, []);
 
   return (
-    <View style={[adStyles.card, { width: SW, height: SH }]}>
+    <View style={[adStyles.card, { width: SW, height: itemHeight }]}>
       <LinearGradient
         colors={slot.gradient}
         start={{ x: 0, y: 0 }}
@@ -1095,7 +1095,8 @@ const endScreenStyles = StyleSheet.create({
 // ─────────────────────────────────────────────────────────────
 const FeedPostCard = memo(function FeedPostCard({
   post, isCurrent, userId, isOwnPost,
-  onLike, onComment, onGift, onShare, onView, onDelete,
+  onLike, onComment, onGift, onShare, onView, onDelete, itemHeight,
+  syncedIsPlaying, onSyncPlayPause,
 }: {
   post: FeedPost; isCurrent: boolean; userId: string; isOwnPost: boolean;
   onLike: (post: FeedPost) => void;
@@ -1104,11 +1105,33 @@ const FeedPostCard = memo(function FeedPostCard({
   onShare: (post: FeedPost) => void;
   onView: (postId: string) => void;
   onDelete: (post: FeedPost) => void;
+  itemHeight: number;
+  syncedIsPlaying?: boolean;   // ✅ play/pause sync from CoWatch partner
+  onSyncPlayPause?: (playing: boolean) => void; // ✅ bubble play/pause up to CoWatch
 }) {
   const videoRef  = useRef<any>(null);
   const soundRef  = useRef<Audio.Sound | null>(null);
   const likeAnim  = useRef(new Animated.Value(1)).current;
   const viewedRef = useRef(false);
+
+  // ✅ FIXED: Respond to partner play/pause sync from CoWatch
+  useEffect(() => {
+    if (!isCurrent || syncedIsPlaying === undefined || !videoRef.current) return;
+    const applySync = async () => {
+      try {
+        const status = await videoRef.current.getStatusAsync();
+        if (!status.isLoaded) return;
+        if (syncedIsPlaying && !status.isPlaying) {
+          await videoRef.current.playAsync();
+          setIsPlaying(true);
+        } else if (!syncedIsPlaying && status.isPlaying) {
+          await videoRef.current.pauseAsync();
+          setIsPlaying(false);
+        }
+      } catch (e) { /* non-critical */ }
+    };
+    applySync();
+  }, [syncedIsPlaying, isCurrent]);
 
   // Animated watermark — moves to 4 corners like videos.tsx
   const wmX       = useRef(new Animated.Value(16)).current;
@@ -1367,8 +1390,18 @@ const FeedPostCard = memo(function FeedPostCard({
     try {
       const status = await videoRef.current.getStatusAsync();
       if (!status.isLoaded) return;
-      if (status.isPlaying) { await videoRef.current.pauseAsync(); setIsPlaying(false); if (isImmerse) stopHaptics(); }
-      else { await videoRef.current.setRateAsync(playbackRate, true); await videoRef.current.playAsync(); setIsPlaying(true); if (isImmerse && !isMuted) startHaptics(); }
+      if (status.isPlaying) {
+        await videoRef.current.pauseAsync();
+        setIsPlaying(false);
+        if (isImmerse) stopHaptics();
+        onSyncPlayPause?.(false); // ✅ notify CoWatch partner → pause
+      } else {
+        await videoRef.current.setRateAsync(playbackRate, true);
+        await videoRef.current.playAsync();
+        setIsPlaying(true);
+        if (isImmerse && !isMuted) startHaptics();
+        onSyncPlayPause?.(true); // ✅ notify CoWatch partner → play
+      }
     } catch (_) {}
   };
 
@@ -1402,7 +1435,7 @@ const FeedPostCard = memo(function FeedPostCard({
   const isLiked = (post.liked_by || []).includes(userId);
 
   return (
-    <View style={[cardStyles.card, { width: SW, height: SH }]}>
+    <View style={[cardStyles.card, { width: SW, height: itemHeight }]}>
 
       {/* ── Immerse border glow ── */}
       {isImmerse && isCurrent && (
@@ -1962,10 +1995,19 @@ export default function CowatchScreen() {
     useAgoraCall(agoraChannel, user?.id || '');
 
   const feedRef           = useRef<FlatList>(null);
+  // ✅ FIX: Track the actual rendered height of feedContainer.
+  // Cards use height:SH (screen height) but feedContainer is shorter
+  // because bottomPanel takes space at the bottom. This mismatch causes
+  // FlatList to snap at SH intervals while the visible window is smaller,
+  // making cards stop halfway on scroll. Using the measured layout height
+  // for both card height and getItemLayout fixes the snap alignment.
+  const [feedHeight, setFeedHeight] = useState(SH);
   const syncChannelRef    = useRef<RealtimeChannel | null>(null);
   const chatChannelRef    = useRef<RealtimeChannel | null>(null);
   const postsChannelRef   = useRef<RealtimeChannel | null>(null);
   const isSyncingRef      = useRef(false);
+  const syncPlayingRef    = useRef(false);          // ✅ tracks partner play/pause state
+  const [syncedIsPlaying, setSyncedIsPlaying] = useState(false); // ✅ triggers re-render for FeedPostCard
   const chatFlatRef       = useRef<FlatList>(null);
   const feedTypeRef       = useRef<'index' | 'video'>('video');
   const postsRef          = useRef<FeedPost[]>([]);
@@ -2165,6 +2207,8 @@ export default function CowatchScreen() {
   const handleRemoteSync = useCallback((updatedSession: CowatchSession) => {
     if (isSyncingRef.current) return;
     setOtherUserActive(true);
+
+    // ✅ FIXED: sync scroll index to partner's position
     const newIndex = updatedSession.current_post_index ?? 0;
     setCurrentIndex(prev => {
       if (prev !== newIndex && newIndex >= 0 && newIndex < postsRef.current.length) {
@@ -2173,6 +2217,14 @@ export default function CowatchScreen() {
       }
       return prev;
     });
+
+    // ✅ FIXED: sync play/pause state from partner
+    // is_playing comes from DB — we store in ref so FeedPostCard can read it
+    if (typeof updatedSession.is_playing === 'boolean') {
+      syncPlayingRef.current = updatedSession.is_playing;
+      setSyncedIsPlaying(updatedSession.is_playing);
+    }
+
     if (updatedSession.feed_type && updatedSession.feed_type !== feedTypeRef.current) {
       setFeedType(updatedSession.feed_type);
       feedTypeRef.current = updatedSession.feed_type;
@@ -2349,7 +2401,13 @@ export default function CowatchScreen() {
       <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
 
       {/* ── FEED — full height ── */}
-      <View style={styles.feedContainer}>
+      <View
+        style={styles.feedContainer}
+        onLayout={(e) => {
+          const h = e.nativeEvent.layout.height;
+          if (h > 0 && h !== feedHeight) setFeedHeight(h);
+        }}
+      >
         {feedLoading && !refreshing ? (
           <View style={styles.feedLoadingWrap}>
             <ActivityIndicator color={C.green} size="large" />
@@ -2363,7 +2421,7 @@ export default function CowatchScreen() {
             pagingEnabled
             showsVerticalScrollIndicator={false}
             onMomentumScrollEnd={(e) => {
-              const idx = Math.round(e.nativeEvent.contentOffset.y / SH);
+              const idx = Math.round(e.nativeEvent.contentOffset.y / feedHeight);
               if (idx === currentIndex || !session) return;
               // ✅ ADDED: stop audio when scrolling to new post
               globalAudioManager.stopCurrent();
@@ -2373,7 +2431,7 @@ export default function CowatchScreen() {
                 setTimeout(() => { isSyncingRef.current = false; }, 600);
               });
             }}
-            getItemLayout={(_, index) => ({ length: SH, offset: SH * index, index })}
+            getItemLayout={(_, index) => ({ length: feedHeight, offset: feedHeight * index, index })}
             onEndReached={handleLoadMore}
             onEndReachedThreshold={0.4}
             onViewableItemsChanged={handleViewableItemsChanged}
@@ -2387,19 +2445,28 @@ export default function CowatchScreen() {
               />
             }
             renderItem={({ item, index }) => {
-              if (isAd(item)) return <NativeAdCard adIndex={item.adIndex} />;
+              if (isAd(item)) return <NativeAdCard adIndex={item.adIndex} itemHeight={feedHeight} />;
               return (
                 <FeedPostCard
                   post={item as FeedPost}
                   isCurrent={index === currentIndex}
                   userId={user?.id || ''}
                   isOwnPost={(item as FeedPost).user_id === user?.id}
+                  syncedIsPlaying={index === currentIndex ? syncedIsPlaying : undefined}
+                  onSyncPlayPause={index === currentIndex && session ? (playing: boolean) => {
+                    // ✅ FIXED: user tapped play/pause — write to DB so partner syncs
+                    isSyncingRef.current = true;
+                    syncFeedIndex(session.id, currentIndex, playing, 0).finally(() => {
+                      setTimeout(() => { isSyncingRef.current = false; }, 600);
+                    });
+                  } : undefined}
                   onLike={handleLike}
                   onComment={setCommentPost}
                   onGift={setGiftPost}
                   onShare={handleShare}
                   onView={handleOnView}
                   onDelete={handleDeletePost}
+                  itemHeight={feedHeight}
                 />
               );
             }}

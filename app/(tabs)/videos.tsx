@@ -1,9 +1,10 @@
-// app/(tabs)/videos.tsx — LUMVIBE VIDEO FEED
-// ✅ All original features preserved: Immerse, haptics, seek bar, spatial audio, vibe badge
+
+// app/(tabs)/videos.tsx — LUMVIBE VIDEO F// ✅ All original features preserved: Immerse, haptics, seek bar, spatial audio, vibe badge
 // ✅ Ad + winner card double-injection fixed, unlike badge multiplier fixed
 // ✅ Both gift handlers do fresh DB read, loadVideos uses Promise.all
 // ✅ ALGORITHM v2: saves, virality ratio, location boost, gentle decay
 // ✅ Post interface: music_url + voice_duration declared, fetched, mapped
+// ✅ FIXED: increment_coins RPC used for receiver — bypasses RLS blocking cross-user coin update
 // ─────────────────────────────────────────────────────────
 // v2.2 VIDEO PLAYBACK FIX (ROOT CAUSE):
 //  ✅ Cloudinary l_text/e_brightness transforms on VIDEO = paid feature
@@ -40,11 +41,11 @@ const POINTS_PER_COMMENT = 15;
 const POINTS_PER_SHARE   = 30;
 
 const FEED_SETTINGS = {
-  windowSize: 2,                  // Only keep 2 screens in memory — saves RAM on 2GB phones
-  maxToRenderPerBatch: 1,         // Render 1 at a time — prevents jank on scroll
-  initialNumToRender: 1,          // Start with just 1 — app opens faster
-  updateCellsBatchingPeriod: 200, // Batch updates every 200ms — fewer JS thread interrupts
-  itemVisiblePercentThreshold: 60, // Trigger at 60% visible — starts buffering sooner
+  windowSize: 2,
+  maxToRenderPerBatch: 1,
+  initialNumToRender: 1,
+  updateCellsBatchingPeriod: 200,
+  itemVisiblePercentThreshold: 60,
 };
 
 async function getOwnerBadgeMultipliers(ownerId: string) {
@@ -186,10 +187,7 @@ interface Post {
   likes_count: number; comments_count: number; views_count: number;
   coins_received: number; liked_by: string[]; location?: string;
   music_name?: string; music_artist?: string;
-  // ✅ FIX: music_url and voice_duration added to interface — without these TypeScript
-  // treats them as unknown on item, so the music tap handler and duration display fail.
   music_url?: string | null; voice_duration?: number | null;
-  // ✅ FIX: applied_filter added so tintColor fallback works for older posts
   applied_filter?: string;
   created_at: string; has_watermark?: boolean; watermarked_url?: string | null; _score?: number;
   video_effect?: string; video_filter_tint?: string; playback_rate?: number;
@@ -211,60 +209,38 @@ function isAd(item: FeedItem): item is AdItem { return 'isAd' in item && (item a
 function isWinnerCard(item: FeedItem): item is WinnerCardItem { return 'isWinnerCard' in item && (item as WinnerCardItem).isWinnerCard === true; }
 
 // ─── ALGORITHM v2: computeVideoScore ─────────────────────────────────────────
-// Same upgrade as home feed + video-specific signals:
-//   • immerseBoost kept (Immerse mode = premium creator signal)
-//   • saves not available on video Post type so omitted
-//   • virality ratio, location boost, gentle decay, gift authority all added
 function computeVideoScore(
   post: Post,
   followingSet: Set<string>,
   authorFollowers: number,
   viewerCity?: string,
 ): number {
-  // 1. GENTLE DECAY — good videos survive 48h, not 7h
   const ageHours    = (Date.now() - new Date(post.created_at).getTime()) / (1000 * 60 * 60);
   const decayFactor = 1 / (1 + Math.pow(ageHours, 0.8) * 0.08);
-
-  // 2. ENGAGEMENT WEIGHTS
   const rawEngagement =
-    post.coins_received * 50 +  // Gift = real money. Strongest signal.
-    post.comments_count * 5  +  // Comment = effort signal
-    post.likes_count    * 2  +  // Like = common but meaningful
-    post.views_count    * 0.5;  // Views matter more for video than images
-
-  // 3. VIRALITY RATIO — efficiency over raw numbers
+    post.coins_received * 50 +
+    post.comments_count * 5  +
+    post.likes_count    * 2  +
+    post.views_count    * 0.5;
   const effectiveViews    = Math.max(post.views_count, 10);
   const engagementActions = post.likes_count + post.comments_count + (post.coins_received > 0 ? 1 : 0);
   const viralityRatio     = engagementActions / effectiveViews;
   const viralityBoost     = 1 + Math.min(viralityRatio * 8, 1.0);
-
-  // 4. FRESHNESS BURST
   const freshnessBurst = ageHours < 1 ? 35 : ageHours < 2 ? 25 : ageHours < 3 ? 15 : 0;
-
-  // 5. SOCIAL GRAPH
   const followingBoost = followingSet.has(post.user_id) ? 1.6 : 1.0;
-
-  // 6. NEW CREATOR RAMP — gradual 1.5x→1.0x across 500 followers
   const newCreatorBoost = authorFollowers < 500
     ? 1.0 + (0.5 * (1 - authorFollowers / 500))
     : 1.0;
-
-  // 7. LOCATION RELEVANCE — your weapon against TikTok
   let locationBoost = 1.0;
   if (viewerCity && post.location) {
     const vc = viewerCity.toLowerCase();
     const pl = post.location.toLowerCase();
     if (pl.includes(vc) || vc.includes(pl)) locationBoost = 1.4;
   }
-
-  // 8. GIFT AUTHORITY
   const giftAuthorityBoost = post.coins_received > 0
     ? 1.0 + Math.min(Math.log10(post.coins_received + 1) * 0.15, 0.4)
     : 1.0;
-
-  // 9. IMMERSE BOOST — premium creator signal (kept from v1)
   const immerseBoost = post.is_immerse ? 1.2 : 1.0;
-
   return (
     (rawEngagement * decayFactor + freshnessBurst)
     * viralityBoost
@@ -441,7 +417,7 @@ const winnerStyles = StyleSheet.create({
   cardFooter:      { color: '#00ff8866', fontSize: 10, textAlign: 'center', marginTop: 20, fontWeight: '600' },
 });
 
-// ─── AD POST (TikTok-style native ad — looks like a real video post) ──────────
+// ─── AD POST ──────────────────────────────────────────────────────────────────
 const NATIVE_AD_SLOTS = [
   {
     advertiser: 'LumVibe Premium',
@@ -498,18 +474,12 @@ function NativeAdPost({ adIndex }: { adIndex: number }) {
 
   return (
     <View style={styles.videoContainer}>
-      {/* Full-screen gradient background */}
       <LinearGradient colors={slot.gradient} style={StyleSheet.absoluteFillObject} />
-
-      {/* Big background emoji */}
       <View style={nativeAdStyles.bgEmojiWrap} pointerEvents="none">
         <Animated.Text style={[nativeAdStyles.bgEmoji, { transform: [{ scale: pulseAnim }] }]}>
           {slot.bgEmoji}
         </Animated.Text>
       </View>
-
-      {/* ── ADMOB BANNER — top of screen, clearly separated, policy compliant ── */}
-      {/* Must be clearly labelled "Advertisement" and NOT adjacent to tappable content */}
       <View style={nativeAdStyles.bannerAdContainer}>
         <Text style={nativeAdStyles.bannerAdLabel}>Advertisement</Text>
         <BannerAd
@@ -521,13 +491,9 @@ function NativeAdPost({ adIndex }: { adIndex: number }) {
         />
         {adError && <Text style={nativeAdStyles.adErrorText}>Ad unavailable</Text>}
       </View>
-
-      {/* ── "Promoted" pill — clearly labelled, large enough to read ── */}
       <View style={nativeAdStyles.sponsoredPill}>
         <Text style={nativeAdStyles.sponsoredText}>📢 Promoted by LumVibe</Text>
       </View>
-
-      {/* ── Promo content — centre of screen, not adjacent to banner ── */}
       <View style={nativeAdStyles.promoCentre}>
         <Text style={nativeAdStyles.promoEmoji}>{slot.bgEmoji}</Text>
         <Text style={nativeAdStyles.promoTitle}>{slot.advertiser}</Text>
@@ -540,8 +506,6 @@ function NativeAdPost({ adIndex }: { adIndex: number }) {
           <Text style={nativeAdStyles.ctaButtonText}>{slot.ctaLabel} →</Text>
         </TouchableOpacity>
       </View>
-
-      {/* ── Bottom info strip — no fake action buttons ── */}
       <View style={styles.videoInfo}>
         <View style={styles.userInfoOverlay}>
           <View style={styles.userInfoContent}>
@@ -560,22 +524,19 @@ function NativeAdPost({ adIndex }: { adIndex: number }) {
 }
 
 const nativeAdStyles = StyleSheet.create({
-  bgEmojiWrap:    { ...StyleSheet.absoluteFillObject, justifyContent: 'center', alignItems: 'center' },
-  bgEmoji:        { fontSize: 160, opacity: 0.10 },
-  // AdMob banner — top of screen, clearly separated from all tappable content
+  bgEmojiWrap:       { ...StyleSheet.absoluteFillObject, justifyContent: 'center', alignItems: 'center' },
+  bgEmoji:           { fontSize: 160, opacity: 0.10 },
   bannerAdContainer: { position: 'absolute', top: 52, left: 0, right: 0, alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.7)', paddingVertical: 8, zIndex: 20, borderBottomWidth: 1, borderBottomColor: '#222' },
   bannerAdLabel:     { color: 'rgba(255,255,255,0.55)', fontSize: 10, marginBottom: 4, letterSpacing: 0.5, fontWeight: '600' },
   adErrorText:       { color: '#555', fontSize: 10, marginTop: 4 },
-  // "Promoted" pill — clearly readable, not subtle
-  sponsoredPill:  { position: 'absolute', top: 140, left: 16, zIndex: 15, backgroundColor: 'rgba(0,0,0,0.75)', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 5, borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.4)' },
-  sponsoredText:  { color: '#fff', fontSize: 12, fontWeight: '800', letterSpacing: 0.5 },
-  // Promo content — centred, not adjacent to the banner
-  promoCentre:    { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 32, paddingTop: 40 },
-  promoEmoji:     { fontSize: 64, marginBottom: 16 },
-  promoTitle:     { color: '#fff', fontSize: 22, fontWeight: '800', textAlign: 'center', marginBottom: 10 },
-  promoCaption:   { color: 'rgba(255,255,255,0.75)', fontSize: 14, textAlign: 'center', lineHeight: 22, marginBottom: 28 },
-  ctaButton:      { paddingHorizontal: 28, paddingVertical: 14, borderRadius: 24 },
-  ctaButtonText:  { color: '#000', fontSize: 15, fontWeight: '800' },
+  sponsoredPill:     { position: 'absolute', top: 140, left: 16, zIndex: 15, backgroundColor: 'rgba(0,0,0,0.75)', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 5, borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.4)' },
+  sponsoredText:     { color: '#fff', fontSize: 12, fontWeight: '800', letterSpacing: 0.5 },
+  promoCentre:       { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 32, paddingTop: 40 },
+  promoEmoji:        { fontSize: 64, marginBottom: 16 },
+  promoTitle:        { color: '#fff', fontSize: 22, fontWeight: '800', textAlign: 'center', marginBottom: 10 },
+  promoCaption:      { color: 'rgba(255,255,255,0.75)', fontSize: 14, textAlign: 'center', lineHeight: 22, marginBottom: 28 },
+  ctaButton:         { paddingHorizontal: 28, paddingVertical: 14, borderRadius: 24 },
+  ctaButtonText:     { color: '#000', fontSize: 15, fontWeight: '800' },
 });
 
 // ─── VIDEO POST ───────────────────────────────────────────────────────────────
@@ -600,7 +561,6 @@ function VideoPost({
   const [durationMs,       setDurationMs]       = useState(0);
   const [videoDisplaySize, setVideoDisplaySize] = useState<{ w: number; h: number } | null>(null);
   const [shouldLoad,       setShouldLoad]       = useState(false);
-  // ── End screen — shows after video finishes, with watermark + replay + follow
   const [showEndScreen,    setShowEndScreen]    = useState(false);
 
   const isFollowing = followStatusMap.get(item.user_id) || false;
@@ -612,11 +572,6 @@ function VideoPost({
   const hapticIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const effectKey        = item.video_effect || 'none';
   const effectInfo       = VIDEO_EFFECTS[effectKey] || VIDEO_EFFECTS['none'];
-  // ✅ FIX: tintColor fallback chain:
-  // 1. video_filter_tint (explicit rgba saved since v5.2) — most reliable
-  // 2. effectInfo.tint (from VIDEO_EFFECTS map for effect-based tints)
-  // 3. FILTER_TINT_MAP[applied_filter] — fallback for older posts saved before
-  //    video_filter_tint was introduced, and for FX effects on older versions
   const FILTER_TINT_MAP: Record<string, string> = {
     beauty: 'rgba(255,200,200,0.18)', vintage: 'rgba(180,120,60,0.25)',
     cool: 'rgba(100,180,255,0.22)',   warm: 'rgba(255,160,50,0.22)',
@@ -701,9 +656,6 @@ function VideoPost({
     if (isActive) {
       setShouldLoad(true);
       if (!viewedRef.current) { viewedRef.current = true; onView(item.id); }
-      // 50ms delay gives React one render cycle to mount the Video component
-      // before shouldPlay becomes true — prevents occasional black flash.
-      // Kept short so video starts as fast as possible even on slow networks.
       const t = setTimeout(async () => {
         setIsPlaying(true);
         videoRef.current?.setRateAsync(playbackRate, true).catch(() => {});
@@ -737,9 +689,6 @@ function VideoPost({
     setVideoDisplaySize({ w: nat.width * finalScale, h: nat.height * finalScale });
   }, []);
 
-  // ✅ PERF FIX: Throttle playback status updates to every 500ms.
-  // Without throttling, this fires 30-60 times/second and triggers React re-renders
-  // on every frame. On a 2GB phone this kills smooth playback.
   const lastStatusUpdate = useRef(0);
   const handlePlaybackStatusUpdate = useCallback((status: AVPlaybackStatus) => {
     if (!status.isLoaded) return;
@@ -786,11 +735,6 @@ function VideoPost({
     catch (e) { console.error('Toggle mute error:', e); }
   };
 
-  // ✅ PERF FIX: Always render at full screen by default — don't wait for naturalSize.
-  // On 2GB Android devices, onReadyForDisplay fires late and the video renders black
-  // because { width: '100%', height: '100%' } inside an absolute-positioned container
-  // collapses to 0x0 until layout is complete. Using fixed pixel dimensions means the
-  // video renders immediately as soon as buffering starts, no black flash.
   const videoStyle = videoDisplaySize
     ? { width: videoDisplaySize.w, height: videoDisplaySize.h }
     : { width, height };
@@ -912,9 +856,7 @@ function VideoPost({
         {item.caption && <Text style={styles.videoCaption} numberOfLines={3}>{item.caption}</Text>}
         {item.location && (<View style={styles.locationContainer}><Feather name="map-pin" size={12} color="#00ff88" /><Text style={styles.locationText}>{item.location}</Text></View>)}
 
-        {/* ── MARKETPLACE SHOP NOW BUTTON ── */}
         {item.vibe_type === 'marketplace' && (() => {
-          // Dual-path: new marketplace_listing_id column OR old cloudinary_public_id trick
           const listingIdFromColumn = (item as any).marketplace_listing_id as string | null | undefined;
           const listingIdFromPublicId = (item as any).cloudinary_public_id?.startsWith('marketplace_listing_')
             ? (item as any).cloudinary_public_id.replace('marketplace_listing_', '')
@@ -939,7 +881,6 @@ function VideoPost({
           );
         })()}
       </View>
-      {/* ── OWNER DELETE BUTTON — top right, only visible to post owner ── */}
       {isOwnPost && (
         <TouchableOpacity
           style={styles.ownerDeleteBtn}
@@ -980,22 +921,15 @@ function VideoPost({
       </View>
       <VideoSeekBar positionMs={positionMs} durationMs={durationMs} onSeek={handleSeek} isVisible={isActive && durationMs > 0} isImmerse={isImmerse} />
 
-      {/* ── VIDEO END SCREEN — shows after video finishes, exactly like TikTok ── */}
       {showEndScreen && isActive && (
         <View style={endScreenStyles.overlay}>
           <View style={endScreenStyles.bg} />
-
-          {/* LumVibe watermark — matches create.tsx VideoEndScreen */}
           <View style={endScreenStyles.watermarkBlock} pointerEvents="none">
             <Image source={require('../../assets/images/adaptive-icon.png')} style={endScreenStyles.watermarkIcon} resizeMode="contain" />
             <Text style={endScreenStyles.watermarkTitle}>LumVibe</Text>
             <Text style={endScreenStyles.watermarkSub}>Discover more creators on LumVibe</Text>
           </View>
-
-          {/* Divider — matches create.tsx */}
           <View style={endScreenStyles.divider} />
-
-          {/* Real live stats — likes, comments, coins, views */}
           <View style={endScreenStyles.statsRow}>
             <View style={endScreenStyles.statItem}>
               <Feather name="heart" size={18} color="#00ff88" />
@@ -1021,8 +955,6 @@ function VideoPost({
               <Text style={endScreenStyles.statLabel}>Views</Text>
             </View>
           </View>
-
-          {/* Creator info + follow */}
           <View style={endScreenStyles.creatorRow}>
             {item.user_photo_url
               ? <Image source={{ uri: item.user_photo_url }} style={endScreenStyles.creatorAvatar} />
@@ -1043,7 +975,6 @@ function VideoPost({
                 </Text>
               </TouchableOpacity>
             ) : (
-              /* Delete button for owner */
               <TouchableOpacity
                 style={endScreenStyles.deleteBtn}
                 onPress={() => {
@@ -1060,8 +991,6 @@ function VideoPost({
               </TouchableOpacity>
             )}
           </View>
-
-          {/* Replay button */}
           <TouchableOpacity
             style={endScreenStyles.replayBtn}
             activeOpacity={0.85}
@@ -1117,9 +1046,8 @@ export default function VideosScreen() {
   const flatListRef  = useRef<FlatList>(null);
 
   const videoCacheRef        = useRef<{ data: FeedItem[]; timestamp: number } | null>(null);
-  const VIDEO_CACHE_DURATION = 90000; // 90s — feed feels instant on return
+  const VIDEO_CACHE_DURATION = 90000;
 
-  // Viewer city for location boost in algorithm
   const viewerCity = useMemo(() => {
     try { return Intl.DateTimeFormat().resolvedOptions().timeZone.split('/')[1]?.replace(/_/g, ' ') || ''; }
     catch { return ''; }
@@ -1129,9 +1057,8 @@ export default function VideosScreen() {
     Promise.all([loadVideos(), loadWeeklyWinners()]);
     const videosChannel = supabase.channel('videos-changes')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'posts' }, (payload) => {
-        // ✅ New video posted — reload feed instantly so it appears at top
         if (payload.new?.media_type === 'video' && payload.new?.is_published === true) {
-          videoCacheRef.current = null; // bust cache so loadVideos fetches fresh
+          videoCacheRef.current = null;
           loadVideos(true);
         }
       })
@@ -1142,10 +1069,9 @@ export default function VideosScreen() {
     return () => { supabase.removeChannel(videosChannel); };
   }, []);
 
-  // ✅ Pull-to-refresh handler
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    videoCacheRef.current = null; // bust cache
+    videoCacheRef.current = null;
     await Promise.all([loadVideos(true), loadWeeklyWinners()]);
     setRefreshing(false);
   }, []);
@@ -1194,8 +1120,6 @@ export default function VideosScreen() {
     try {
       const { data: postsData, error: postsError } = await supabase
         .from('posts')
-        // ✅ FIX: added applied_filter to select — used as fallback tint for older posts
-        // that were saved before video_filter_tint was introduced.
         .select('id,user_id,caption,media_url,watermarked_url,media_type,views_count,coins_received,saved_by,liked_by,location,music_name,music_artist,music_url,voice_duration,created_at,has_watermark,applied_filter,video_effect,video_filter_tint,playback_rate,is_immerse,haptic_pattern,spatial_audio,vibe_type,cloudinary_public_id,is_published,marketplace_listing_id,marketplace_price,marketplace_title')
         .eq('media_type', 'video')
         .or('is_published.is.null,is_published.eq.true')
@@ -1208,8 +1132,6 @@ export default function VideosScreen() {
       const userIds = [...new Set(postsData.map(p => p.user_id))];
       const postIds = postsData.map(p => p.id);
 
-      // ✅ BUG FIX: All queries now run in parallel with Promise.all
-      // Was sequential (4 separate awaits) — now runs simultaneously, 2-4x faster
       const [usersResult, likesResult, commentsResult, followingResult] = await Promise.all([
         supabase.from('users').select('id, username, display_name, avatar_url, followers_count').in('id', userIds),
         supabase.from('likes').select('post_id, user_id').in('post_id', postIds),
@@ -1236,12 +1158,8 @@ export default function VideosScreen() {
           views_count: p.views_count || 0, coins_received: p.coins_received || 0,
           liked_by: likes.users, location: p.location,
           music_name: p.music_name, music_artist: p.music_artist,
-          // ✅ FIX: music_url was fetched but never mapped — background music on
-          // video posts was always undefined, so nothing played when tapped.
           music_url: p.music_url || null,
-          // ✅ FIX: voice_duration likewise needs mapping for audio post duration display.
           voice_duration: p.voice_duration || null,
-          // 2705 FIX: applied_filter mapped so tintColor fallback works for older posts
           applied_filter: p.applied_filter || 'original',
           created_at: p.created_at, has_watermark: p.has_watermark || false,
           watermarked_url: p.watermarked_url || null,
@@ -1252,7 +1170,6 @@ export default function VideosScreen() {
         };
       });
 
-      // ✅ ALGORITHM v2 — pass viewerCity for location boost
       const scoredPosts = formattedPosts.map(post => ({
         ...post,
         _score: computeVideoScore(post, followingSet, usersMap.get(post.user_id)?.followers_count || 0, viewerCity)
@@ -1261,7 +1178,6 @@ export default function VideosScreen() {
       const topPosts = scoredPosts.slice(0, 50);
       setPosts(topPosts);
 
-      // ✅ BUG FIX: else if prevents double ad+winner at index 3
       const itemsWithAds: FeedItem[] = [];
       let adCounter = 0; let winnerCardInserted = false;
       topPosts.forEach((post, index) => {
@@ -1318,7 +1234,6 @@ export default function VideosScreen() {
       if (isLiked) {
         const { error } = await supabase.from('likes').delete().eq('post_id', post.id).eq('user_id', userId);
         if (error) throw error;
-        // ✅ BUG FIX: Unlike uses badge multiplier (same as like) — no more point inflation
         const { data: ownerData } = await supabase.from('users').select('points').eq('id', post.user_id).single();
         if (ownerData) { const multipliers = await getOwnerBadgeMultipliers(post.user_id); await supabase.from('users').update({ points: Math.max(0, (ownerData.points || 0) - multipliers.likePoints) }).eq('id', post.user_id); }
       } else {
@@ -1333,27 +1248,50 @@ export default function VideosScreen() {
 
   const handleGift = useCallback((post: Post) => { setGiftRecipientPost(post); setCustomGiftMode(false); setCustomGiftAmount(''); setGiftModalVisible(true); }, []);
 
+  // ✅ FIXED: Uses increment_coins RPC for receiver — bypasses RLS policy that blocks
+  // one user from directly updating another user's coins column via .update()
   const handleSelectGiftPackage = async (giftPackage: typeof GIFT_PACKAGES[0]) => {
     if (!giftRecipientPost || !userId) return;
     if (giftPackage.coins > (userProfile?.coins || 0)) {
-      Alert.alert(t.videos.insufficientCoins, `You need ${giftPackage.coins} coins but only have ${(userProfile?.coins || 0).toFixed(0)}.`, [{ text: t.common.cancel, style: 'cancel' }, { text: t.videos.topUpWallet, onPress: () => { setGiftModalVisible(false); setTimeout(() => router.push('/buy-coins' as any), 300); } }]);
+      Alert.alert(t.videos.insufficientCoins, `You need ${giftPackage.coins} coins but only have ${(userProfile?.coins || 0).toFixed(0)}.`, [
+        { text: t.common.cancel, style: 'cancel' },
+        { text: t.videos.topUpWallet, onPress: () => { setGiftModalVisible(false); setTimeout(() => router.push('/buy-coins' as any), 300); } },
+      ]);
       return;
     }
     try {
-      // ✅ FIX: Fresh DB read before deducting — prevents stale store overwriting real balance
+      // ✅ Fresh DB read before deducting — prevents stale store overwriting real balance
       const { data: freshSender } = await supabase.from('users').select('coins').eq('id', userId).single();
-      if ((freshSender?.coins || 0) < giftPackage.coins) { Alert.alert('Insufficient coins', 'Balance changed. Please try again.'); return; }
-      await supabase.from('users').update({ coins: (freshSender?.coins || 0) - giftPackage.coins }).eq('id', userId);
-      const { data: receiver } = await supabase.from('users').select('coins').eq('id', giftRecipientPost.user_id).single();
-      await supabase.from('users').update({ coins: (receiver?.coins || 0) + giftPackage.coins }).eq('id', giftRecipientPost.user_id);
-      // ✅ BUG FIX: Fresh read before write — prevents stale coins_received overwrite
+      if ((freshSender?.coins || 0) < giftPackage.coins) {
+        Alert.alert('Insufficient coins', 'Balance changed. Please try again.');
+        return;
+      }
+      // Deduct coins from sender
+      await supabase.from('users')
+        .update({ coins: (freshSender?.coins || 0) - giftPackage.coins })
+        .eq('id', userId);
+
+      // ✅ FIXED: Use RPC to add coins to receiver — avoids RLS blocking cross-user update
+      await supabase.rpc('increment_coins', {
+        target_user_id: giftRecipientPost.user_id,
+        coin_amount: giftPackage.coins,
+      });
+
+      // ✅ Fresh read before write — prevents stale coins_received overwrite
       const { data: freshPost } = await supabase.from('posts').select('coins_received').eq('id', giftRecipientPost.id).single();
-      await supabase.from('posts').update({ coins_received: (freshPost?.coins_received || 0) + giftPackage.coins }).eq('id', giftRecipientPost.id);
+      await supabase.from('posts')
+        .update({ coins_received: (freshPost?.coins_received || 0) + giftPackage.coins })
+        .eq('id', giftRecipientPost.id);
+
       await supabase.from('transactions').insert([
         { user_id: userId, type: 'spent', amount: giftPackage.coins, description: `Sent ${giftPackage.name} ${giftPackage.icon} to @${giftRecipientPost.username}`, status: 'completed' },
         { user_id: giftRecipientPost.user_id, type: 'received', amount: giftPackage.coins, description: `Received ${giftPackage.name} ${giftPackage.icon} from @${userProfile?.username}`, status: 'completed' },
       ]);
-      await supabase.from('notifications').insert({ user_id: giftRecipientPost.user_id, type: 'gift', title: 'New Gift', message: `@${userProfile?.username || 'Someone'} sent you ${giftPackage.name} ${giftPackage.icon} (${giftPackage.coins} coins)`, from_user_id: userId, post_id: giftRecipientPost.id, is_read: false });
+      await supabase.from('notifications').insert({
+        user_id: giftRecipientPost.user_id, type: 'gift', title: 'New Gift',
+        message: `@${userProfile?.username || 'Someone'} sent you ${giftPackage.name} ${giftPackage.icon} (${giftPackage.coins} coins)`,
+        from_user_id: userId, post_id: giftRecipientPost.id, is_read: false,
+      });
       setGiftModalVisible(false);
       const updateCoins = (p: Post) => p.id === giftRecipientPost.id ? { ...p, coins_received: p.coins_received + giftPackage.coins } : p;
       setPosts(prev => prev.map(updateCoins));
@@ -1363,30 +1301,52 @@ export default function VideosScreen() {
     } catch (error: any) { Alert.alert('Error', 'Failed to send gift'); }
   };
 
+  // ✅ FIXED: Uses increment_coins RPC for receiver — same fix as handleSelectGiftPackage
   const handleSendCustomGift = async () => {
     if (!customGiftAmount.trim() || !giftRecipientPost || !userId) return;
     const amount = parseFloat(customGiftAmount);
     if (isNaN(amount) || amount < 10)       { Alert.alert('Invalid Amount', 'Minimum 10 coins'); return; }
     if (amount > 5000)                      { Alert.alert('Invalid Amount', 'Maximum 5,000 coins (₦750,000)'); return; }
     if (amount > (userProfile?.coins || 0)) {
-      Alert.alert(t.videos.insufficientCoins, `You only have ${(userProfile?.coins || 0).toFixed(0)} coins.`, [{ text: t.common.cancel, style: 'cancel' }, { text: t.videos.topUpWallet, onPress: () => { setGiftModalVisible(false); setCustomGiftMode(false); setTimeout(() => router.push('/buy-coins' as any), 300); } }]);
+      Alert.alert(t.videos.insufficientCoins, `You only have ${(userProfile?.coins || 0).toFixed(0)} coins.`, [
+        { text: t.common.cancel, style: 'cancel' },
+        { text: t.videos.topUpWallet, onPress: () => { setGiftModalVisible(false); setCustomGiftMode(false); setTimeout(() => router.push('/buy-coins' as any), 300); } },
+      ]);
       return;
     }
     try {
-      // ✅ FIX: Fresh DB read before deducting — prevents stale store overwriting real balance
+      // ✅ Fresh DB read before deducting — prevents stale store overwriting real balance
       const { data: freshSender2 } = await supabase.from('users').select('coins').eq('id', userId).single();
-      if ((freshSender2?.coins || 0) < amount) { Alert.alert('Insufficient coins', 'Balance changed. Please try again.'); return; }
-      await supabase.from('users').update({ coins: (freshSender2?.coins || 0) - amount }).eq('id', userId);
-      const { data: receiver } = await supabase.from('users').select('coins').eq('id', giftRecipientPost.user_id).single();
-      await supabase.from('users').update({ coins: (receiver?.coins || 0) + amount }).eq('id', giftRecipientPost.user_id);
-      // ✅ BUG FIX: Fresh read before write
+      if ((freshSender2?.coins || 0) < amount) {
+        Alert.alert('Insufficient coins', 'Balance changed. Please try again.');
+        return;
+      }
+      // Deduct coins from sender
+      await supabase.from('users')
+        .update({ coins: (freshSender2?.coins || 0) - amount })
+        .eq('id', userId);
+
+      // ✅ FIXED: Use RPC to add coins to receiver — avoids RLS blocking cross-user update
+      await supabase.rpc('increment_coins', {
+        target_user_id: giftRecipientPost.user_id,
+        coin_amount: amount,
+      });
+
+      // ✅ Fresh read before write
       const { data: freshPost } = await supabase.from('posts').select('coins_received').eq('id', giftRecipientPost.id).single();
-      await supabase.from('posts').update({ coins_received: (freshPost?.coins_received || 0) + amount }).eq('id', giftRecipientPost.id);
+      await supabase.from('posts')
+        .update({ coins_received: (freshPost?.coins_received || 0) + amount })
+        .eq('id', giftRecipientPost.id);
+
       await supabase.from('transactions').insert([
         { user_id: userId, type: 'spent', amount, description: `Sent custom gift (${amount} coins = ${coinsToNGN(amount)}) to @${giftRecipientPost.username}`, status: 'completed' },
         { user_id: giftRecipientPost.user_id, type: 'received', amount, description: `Received custom gift (${amount} coins = ${coinsToNGN(amount)}) from @${userProfile?.username}`, status: 'completed' },
       ]);
-      await supabase.from('notifications').insert({ user_id: giftRecipientPost.user_id, type: 'gift', title: 'New Gift', message: `@${userProfile?.username || 'Someone'} sent a custom gift (${amount} coins)`, from_user_id: userId, post_id: giftRecipientPost.id, is_read: false });
+      await supabase.from('notifications').insert({
+        user_id: giftRecipientPost.user_id, type: 'gift', title: 'New Gift',
+        message: `@${userProfile?.username || 'Someone'} sent a custom gift (${amount} coins)`,
+        from_user_id: userId, post_id: giftRecipientPost.id, is_read: false,
+      });
       setGiftModalVisible(false); setCustomGiftMode(false); setCustomGiftAmount('');
       const updateCoins = (p: Post) => p.id === giftRecipientPost.id ? { ...p, coins_received: p.coins_received + amount } : p;
       setPosts(prev => prev.map(updateCoins));
@@ -1518,54 +1478,22 @@ export default function VideosScreen() {
         { text: t.common.save, onPress: async () => {
           try {
             const { status } = await MediaLibrary.requestPermissionsAsync();
-            if (status !== 'granted') {
-              Alert.alert(t.videos.permissionDenied, t.videos.permissionMsg);
-              return;
-            }
-
+            if (status !== 'granted') { Alert.alert(t.videos.permissionDenied, t.videos.permissionMsg); return; }
             if (!post.media_url) { Alert.alert('Error', 'No video URL found.'); return; }
-
-            // ── PICK THE BEST DOWNLOAD URL ─────────────────────────────────
-            // Priority 1: watermarked_url — stored at upload time via Cloudinary
-            //             eager transform (free on all Cloudinary plans).
-            //             The watermark is permanently baked into the video file
-            //             so it is visible when the user shares to WhatsApp,
-            //             TikTok, Instagram, or anywhere else.
-            // Priority 2: plain media_url fallback for old posts that were
-            //             posted before this fix was deployed (watermarked_url
-            //             will be null for those — graceful degradation).
             const downloadUrl = post.watermarked_url || post.media_url;
-
             const fileName = `lumvibe_${post.id}_${Date.now()}.mp4`;
             const localUri = `${FileSystem.cacheDirectory}${fileName}`;
-
             Alert.alert('\u2b07\ufe0f Downloading...', 'Saving video to your gallery...');
-
             let downloadResult = await FileSystem.downloadAsync(downloadUrl, localUri);
-
-            // If the watermarked URL failed (rare CDN hiccup), retry with plain URL
             if (downloadResult.status !== 200 && downloadUrl !== post.media_url) {
               downloadResult = await FileSystem.downloadAsync(post.media_url, localUri);
             }
-
-            if (downloadResult.status !== 200) {
-              Alert.alert('Error', 'Download failed. Please try again.');
-              return;
-            }
-
+            if (downloadResult.status !== 200) { Alert.alert('Error', 'Download failed. Please try again.'); return; }
             const asset = await MediaLibrary.createAssetAsync(downloadResult.uri);
             await MediaLibrary.createAlbumAsync('LumVibe', asset, false);
             await FileSystem.deleteAsync(downloadResult.uri, { idempotent: true });
-
-            Alert.alert(
-              '\u2705 Saved!',
-              post.watermarked_url
-                ? 'Video saved with LumVibe watermark to your gallery.'
-                : 'Video saved to your LumVibe gallery album.'
-            );
-          } catch (e: any) {
-            Alert.alert('Error', 'Failed to save video: ' + (e.message || 'Unknown error'));
-          }
+            Alert.alert('\u2705 Saved!', post.watermarked_url ? 'Video saved with LumVibe watermark to your gallery.' : 'Video saved to your LumVibe gallery album.');
+          } catch (e: any) { Alert.alert('Error', 'Failed to save video: ' + (e.message || 'Unknown error')); }
         }}
       ]
     );
@@ -1764,7 +1692,6 @@ const videoShopStyles = StyleSheet.create({
   shopBtnText: { color: '#000', fontWeight: '700', fontSize: 13 },
 });
 
-// ─── END SCREEN STYLES ───────────────────────────────────────────────────────
 const endScreenStyles = StyleSheet.create({
   overlay:          { ...StyleSheet.absoluteFillObject, zIndex: 50, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 24 },
   bg:               { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.82)' },
@@ -1773,13 +1700,11 @@ const endScreenStyles = StyleSheet.create({
   watermarkTitle:   { color: '#00ff88', fontSize: 24, fontWeight: '900', letterSpacing: 1 },
   watermarkSub:     { color: 'rgba(255,255,255,0.4)', fontSize: 11, marginTop: 2, letterSpacing: 0.5 },
   divider:          { width: '55%', height: 1, backgroundColor: '#00ff8833', marginBottom: 16, marginTop: 4 },
-  // Real live stats row
   statsRow:         { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: 14, paddingVertical: 12, paddingHorizontal: 16, marginBottom: 16, width: '100%' },
   statItem:         { flex: 1, alignItems: 'center', gap: 4 },
   statValue:        { color: '#fff', fontSize: 15, fontWeight: '800' },
   statLabel:        { color: '#666', fontSize: 10, fontWeight: '500' },
   statDivider:      { width: 1, height: 32, backgroundColor: '#222' },
-  // Creator row
   creatorRow:       { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 20, backgroundColor: 'rgba(255,255,255,0.06)', borderRadius: 16, padding: 14, width: '100%' },
   creatorAvatar:    { width: 44, height: 44, borderRadius: 22, borderWidth: 1.5, borderColor: '#00ff88' },
   avatarFallback:   { backgroundColor: '#111', justifyContent: 'center', alignItems: 'center' },
@@ -1789,10 +1714,8 @@ const endScreenStyles = StyleSheet.create({
   followingBtn:     { backgroundColor: 'transparent', borderWidth: 1.5, borderColor: '#00ff88' },
   followBtnText:    { color: '#000', fontWeight: '800', fontSize: 13 },
   followingBtnText: { color: '#00ff88' },
-  // Delete button for owner
   deleteBtn:        { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: 'rgba(255,68,68,0.12)', borderRadius: 20, paddingHorizontal: 12, paddingVertical: 8, borderWidth: 1, borderColor: '#ff4444' },
   deleteBtnText:    { color: '#ff4444', fontWeight: '700', fontSize: 13 },
-  // Replay button
   replayBtn:        { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#00ff88', borderRadius: 28, paddingHorizontal: 32, paddingVertical: 14 },
   replayBtnText:    { color: '#000', fontWeight: '900', fontSize: 16, letterSpacing: 0.5 },
 });

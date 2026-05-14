@@ -57,8 +57,10 @@ try {
   if (typeof Agora.createAgoraRtcEngine === 'function') {
     AgoraEngine   = Agora.createAgoraRtcEngine;
     AgoraIsV4     = true;
-    RtcLocalView  = { SurfaceView: Agora.RtcSurfaceView };
-    RtcRemoteView = { SurfaceView: Agora.RtcSurfaceView };
+    if (Agora.RtcSurfaceView) {
+  RtcLocalView = { SurfaceView: Agora.RtcSurfaceView };
+  RtcRemoteView = { SurfaceView: Agora.RtcSurfaceView };
+}
   } else {
     AgoraEngine   = Agora.default?.RtcEngine || Agora.RtcEngine;
     AgoraIsV4     = false;

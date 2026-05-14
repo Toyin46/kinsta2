@@ -12,41 +12,123 @@
 // ✅ Translation kept intact — useTranslation still used throughout
 
 import React, { useState, useEffect, useRef, useCallback, memo } from 'react';
+// Flutterwave removed — Paystack only
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Image, Alert,
   ActivityIndicator, RefreshControl, Modal, FlatList, Dimensions, Share,
   TextInput, Linking, Platform, Animated, Switch,
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
+// Flutterwave removed — Paystack only
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
+// Flutterwave removed — Paystack only
 import { useTranslation } from '../../locales/LanguageContext';
+// Flutterwave removed — Paystack only
 import { useAuthStore } from '../../store/authStore';
+// Flutterwave removed — Paystack only
 import { supabase } from '../../config/supabase';
+// Flutterwave removed — Paystack only
 import { router } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system';
+// Flutterwave removed — Paystack only
 import { decode } from 'base64-arraybuffer';
+// Flutterwave removed — Paystack only
 import { useFocusEffect } from '@react-navigation/native';
+// Flutterwave removed — Paystack only
 import { getWithdrawingUserReferrer } from '@/utils/referralRewards';
-import {
-  SUPPORTED_COUNTRIES,
-  getFlutterwaveBanks,
-  verifyFlutterwaveAccount,
-} from '@/utils/flutterwaveUtils';
+// Flutterwave removed — Paystack only
+// ✅ Paystack bank list (replaces Flutterwave) — fetched directly from Paystack API via Supabase Edge Function
+// SUPPORTED_COUNTRIES for international manual withdrawals
+const SUPPORTED_COUNTRIES = [
+  { code: 'GH', name: 'Ghana',          flag: '🇬🇭', currency: 'GHS' },
+  { code: 'KE', name: 'Kenya',          flag: '🇰🇪', currency: 'KES' },
+  { code: 'ZA', name: 'South Africa',   flag: '🇿🇦', currency: 'ZAR' },
+  { code: 'US', name: 'United States',  flag: '🇺🇸', currency: 'USD' },
+  { code: 'GB', name: 'United Kingdom', flag: '🇬🇧', currency: 'GBP' },
+  { code: 'CA', name: 'Canada',         flag: '🇨🇦', currency: 'CAD' },
+  { code: 'DE', name: 'Germany',        flag: '🇩🇪', currency: 'EUR' },
+  { code: 'FR', name: 'France',         flag: '🇫🇷', currency: 'EUR' },
+  { code: 'EG', name: 'Egypt',          flag: '🇪🇬', currency: 'EGP' },
+  { code: 'MA', name: 'Morocco',        flag: '🇲🇦', currency: 'MAD' },
+];
+
+// ✅ Fetch Nigerian banks from Paystack (replaces getFlutterwaveBanks)
+async function getPaystackBanks(countryCode: string = 'NG'): Promise<Array<{ name: string; code: string }>> {
+  try {
+    // For Nigeria use Paystack; for other countries return empty (manual entry)
+    if (countryCode !== 'NG') return [];
+    const { data, error } = await supabase.functions.invoke('get-paystack-banks');
+    // ✅ FIXED: don't throw — fall through to hardcoded fallback below
+    if (error || !data?.banks?.length) throw new Error('Using fallback banks');
+    return (data.banks || []).map((b: any) => ({ name: b.name, code: b.code }));
+  } catch {
+    // Fallback hardcoded Nigerian banks if edge function fails
+    return [
+      { name: 'Access Bank',               code: '044' },
+      { name: 'First Bank of Nigeria',     code: '011' },
+      { name: 'Guaranty Trust Bank (GTB)', code: '058' },
+      { name: 'United Bank for Africa',    code: '033' },
+      { name: 'Zenith Bank',               code: '057' },
+      { name: 'Fidelity Bank',             code: '070' },
+      { name: 'First City Monument Bank',  code: '214' },
+      { name: 'Heritage Bank',             code: '030' },
+      { name: 'Keystone Bank',             code: '082' },
+      { name: 'Stanbic IBTC Bank',         code: '221' },
+      { name: 'Sterling Bank',             code: '232' },
+      { name: 'Union Bank',                code: '032' },
+      { name: 'Wema Bank',                 code: '035' },
+      { name: 'Ecobank',                   code: '050' },
+      { name: 'Polaris Bank',              code: '076' },
+      { name: 'OPay',                      code: '999992' },
+      { name: 'Kuda Bank',                 code: '090267' },
+      { name: 'PalmPay',                   code: '999991' },
+      { name: 'Moniepoint MFB',            code: '090405' },
+    ];
+  }
+}
+
+// ✅ Verify account name via Paystack (replaces verifyFlutterwaveAccount)
+async function verifyPaystackAccount(accountNumber: string, bankCode: string): Promise<{ success: boolean; accountName?: string; message?: string }> {
+  try {
+    const { data, error } = await supabase.functions.invoke('verify-paystack-account', {
+      body: { accountNumber, bankCode },
+    });
+    // ✅ FIXED: Don't throw error object — extract message and return gracefully
+    // This prevents "Edge Function returned a non-2xx status code" alert
+    if (error) {
+      console.warn('[verifyPaystackAccount] Edge Function error:', error.message);
+      // Try to parse context for a better message
+      let msg = 'Could not verify account. Please try again.';
+      try {
+        const ctx = typeof error.context === 'string' ? JSON.parse(error.context) : error.context;
+        if (ctx?.message) msg = ctx.message;
+      } catch {}
+      return { success: false, message: msg };
+    }
+    if (data?.account_name) {
+      return { success: true, accountName: data.account_name };
+    }
+    return { success: false, message: data?.message || 'Could not verify account. Check account number and bank.' };
+  } catch (e: any) {
+    return { success: false, message: 'Verification failed. Please check your internet connection.' };
+  }
+}
+// Flutterwave removed — Paystack only
 import { WinnerProfileBadge } from '@/components/LeaderboardWinnerCelebration';
 
 const { width } = Dimensions.get('window');
-const POST_SIZE = (width - 3) / 3;
+const POST_SIZE = Math.floor((width - 4) / 3); // 3 columns, 1px gaps between
 
 const WITHDRAWAL_SPLIT = {
-  PLATFORM_FEE:        0.30,
+  PLATFORM_FEE:        0.20,
   REFERRAL_COMMISSION: 0.05,
-  USER_REFERRED:       0.65,
-  USER_NOT_REFERRED:   0.70,
+  USER_REFERRED:       0.75,
+  USER_NOT_REFERRED:   0.80,
 };
 
-// ✅ FIXED: raised to 34 — minimum viable NGN payout after 30% fee
-const MIN_WITHDRAW_COINS = 34;
+// ✅ FIXED: raised to 34 — minimum viable NGN payout after 20% fee
+const MIN_WITHDRAW_COINS = 5;
 
 // Paystack supports automatic payouts for these currencies
 const PAYSTACK_AUTO_CURRENCIES = ['NGN', 'GHS'];
@@ -193,9 +275,10 @@ const THEMES: Record<string, { background: string; card: string; primary: string
 };
 
 const UNLOCKABLE_FEATURES = [
-  { id: 'glowing_avatar',      icon: '✨', name: 'Glowing Avatar Border',   requiredInvites: 20, description: 'Your profile gets a beautiful animated glow!' },
-  { id: 'custom_themes',       icon: '🎨', name: 'Custom Profile Themes',    requiredInvites: 50, description: 'Unlock exclusive color themes for your profile.' },
-  { id: 'advanced_analytics',  icon: '📊', name: 'Advanced Analytics',       requiredInvites: 100, description: 'See detailed stats about your content performance.' },
+  { id: 'custom_themes',      name: 'Custom Profile Themes',    icon: '🎨', requiredInvites: 3  },
+  { id: 'advanced_analytics', name: 'Advanced Analytics',       icon: '📊', requiredInvites: 5  },
+  { id: 'priority_support',   name: 'Priority Support',         icon: '💬', requiredInvites: 10 },
+  { id: 'glowing_avatar',     name: 'Glowing Avatar Border ✨', icon: '🌟', requiredInvites: 20 },
 ];
 
 const SOCIAL_PLATFORMS = [
@@ -483,8 +566,9 @@ export default function ProfileScreen() {
         loadTheme();
         checkPaystackConnection();
         loadLayoutPreference();
-        loadUserCoins();
-        loadTransactions();
+        loadUserCoins();      // ✅ Always refresh coins on screen focus
+        loadTransactions();   // ✅ Always refresh transaction history on focus
+        loadGamificationData(); // ✅ Refresh points/streak on focus
       }
     }, [user?.id])
   );
@@ -495,9 +579,20 @@ export default function ProfileScreen() {
       const walletChannel = supabase
         .channel('wallet-realtime')
         .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'users', filter: `id=eq.${user.id}` }, (payload: any) => {
-          if (payload.new?.coins !== undefined) setCoins(Math.max(0, payload.new.coins));
+          // ✅ FIXED: reload coins on ANY user update (covers RPC increment_coins calls too)
+          if (payload.new?.coins !== undefined) {
+            setCoins(Math.max(0, payload.new.coins));
+          } else {
+            // RPC may not return coins in payload — do a fresh fetch
+            loadUserCoins();
+          }
         })
-        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'transactions', filter: `user_id=eq.${user.id}` }, () => { loadTransactions(); })
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'transactions', filter: `user_id=eq.${user.id}` }, () => {
+          // ✅ FIXED: reload BOTH transactions AND coins when any transaction happens
+          // This catches gift sends, gift receives, purchases, withdrawals
+          loadTransactions();
+          loadUserCoins();
+        })
         .subscribe();
       return () => { supabase.removeChannel(walletChannel); };
     }
@@ -529,7 +624,7 @@ export default function ProfileScreen() {
     try {
       const { data } = await supabase
         .from('users')
-        .select('points, level, current_streak, is_weekly_winner, winner_week_label, winner_points')
+        .select('points, level, current_streak, is_weekly_winner, winner_week_label, winner_points, last_active_date')
         .eq('id', user.id)
         .single();
       if (data) {
@@ -540,6 +635,42 @@ export default function ProfileScreen() {
         setIsWeeklyWinner(data.is_weekly_winner || false);
         setWinnerWeekLabel(data.winner_week_label || '');
         setWinnerPoints(data.winner_points || 0);
+
+        // ✅ DAILY STREAK POINTS — award 5 pts for each new day login
+        // Safe: wrapped in its own try/catch so any DB error never crashes the screen
+        try {
+          const todayStr = new Date().toISOString().split('T')[0]; // 'YYYY-MM-DD'
+          const lastDate = data.last_active_date || '';
+
+          if (lastDate !== todayStr) {
+            // Work out new streak value
+            const yesterday = new Date();
+            yesterday.setDate(yesterday.getDate() - 1);
+            const yesterdayStr = yesterday.toISOString().split('T')[0];
+            const newStreak = lastDate === yesterdayStr
+              ? (data.current_streak || 0) + 1  // consecutive day → increment
+              : 1;                               // missed a day → reset to 1
+
+            const DAILY_LOGIN_POINTS = 5;
+            const newPoints = (data.points || 0) + DAILY_LOGIN_POINTS;
+
+            await supabase
+              .from('users')
+              .update({
+                last_active_date: todayStr,
+                current_streak:   newStreak,
+                points:           newPoints,
+              })
+              .eq('id', user.id);
+
+            // Update local state immediately so profile shows correct values
+            setPoints(newPoints);
+            setCurrentStreak(newStreak);
+          }
+        } catch (streakErr) {
+          // Non-critical — gamification data still loaded above
+          console.warn('Daily streak update skipped:', streakErr);
+        }
       }
     } catch {}
   };
@@ -547,27 +678,76 @@ export default function ProfileScreen() {
   const loadUserBadges = async () => {
     if (!user?.id) return;
     try {
-      const { data } = await supabase.from('user_badges').select('badge_id, earned_at').eq('user_id', user.id);
-      setUserBadges(data || []);
-    } catch {}
+      // ✅ Don't order by earned_at — column may not exist in table
+      const { data, error } = await supabase
+        .from('user_badges')
+        .select('*')
+        .eq('user_id', user.id);
+      if (error) { console.warn('loadUserBadges error:', error.message); }
+      const existing = data || [];
+      await checkAndAwardBadges(existing);
+      // Reload after awarding to show newly earned badges
+      const { data: fresh } = await supabase
+        .from('user_badges')
+        .select('*')
+        .eq('user_id', user.id);
+      setUserBadges(fresh || []);
+    } catch (e: any) { console.warn('loadUserBadges catch:', e?.message); }
   };
 
-  const checkAndAwardBadges = async () => {
+  const checkAndAwardBadges = async (existingBadges: any[]) => {
     if (!user?.id) return;
     try {
-      const { data: existing } = await supabase.from('user_badges').select('badge_id').eq('user_id', user.id);
-      const earned = (existing || []).map((b: any) => b.badge_id);
+      const { data: userData }   = await supabase.from('users').select('points').eq('id', user.id).single();
+      const { count: userCount } = await supabase.from('users').select('id', { count: 'exact', head: true });
+      const { count: pc }        = await supabase.from('posts').select('*', { count: 'exact', head: true }).eq('user_id', user.id);
+      const { data: u }          = await supabase.from('users').select('followers_count, current_streak').eq('id', user.id).single();
+      const { data: up }         = await supabase.from('posts').select('id').eq('user_id', user.id);
+      let lks = 0;
+      if (up && up.length > 0) {
+        const { count } = await supabase.from('likes').select('*', { count: 'exact', head: true }).in('post_id', up.map((p: any) => p.id));
+        lks = count || 0;
+      }
+      const currentUserCount = userCount ?? 999999;
+      const criteria = [
+        { id: 'founding_member', bonusPoints: 100, check: () => currentUserCount <= 100 },
+        { id: 'early_adopter',   bonusPoints: 50,  check: () => currentUserCount <= 1000 },
+        { id: 'streak_7',        bonusPoints: 50,  check: () => (u?.current_streak || 0) >= 7 },
+        { id: 'streak_30',       bonusPoints: 200, check: () => (u?.current_streak || 0) >= 30 },
+        { id: 'posts_10',        bonusPoints: 100, check: () => (pc || 0) >= 10 },
+        { id: 'followers_100',   bonusPoints: 150, check: () => (u?.followers_count || 0) >= 100 },
+        { id: 'likes_100',       bonusPoints: 100, check: () => lks >= 100 },
+      ];
       let pointsToAdd = 0;
-      for (const badge of BADGES) {
-        if (earned.includes(badge.id)) continue;
-        const prog = badge.getProgress(badgeStats, totalUserCount);
-        if (prog.achieved) {
-          await supabase.from('user_badges').insert({ user_id: user.id, badge_id: badge.id });
-          pointsToAdd += badge.bonusPoints || 0;
+      for (const badge of criteria) {
+        const alreadyEarned = existingBadges.some((eb: any) => eb.badge_id === badge.id);
+        if (!alreadyEarned && badge.check()) {
+          // ✅ Insert without earned_at — let DB use default or omit the column
+          const { error } = await supabase.from('user_badges').insert({
+            user_id:    user.id,
+            badge_id:   badge.id,
+            badge_name: BADGES.find(b => b.id === badge.id)?.name || badge.id,
+          });
+          if (!error) {
+            pointsToAdd += badge.bonusPoints;
+            const info = BADGES.find(b => b.id === badge.id);
+            if (info) {
+              try {
+                await supabase.from('notifications').insert({
+                  user_id:  user.id,
+                  type:     'achievement',
+                  title:    `Badge Earned! ${info.icon}`,
+                  message:  `You earned "${info.name}"! Reward: ${info.reward}`,
+                  is_read:  false,
+                });
+              } catch {}
+            }
+          } else {
+            console.warn('Badge insert error:', badge.id, error.message);
+          }
         }
       }
       if (pointsToAdd > 0) {
-        const { data: userData } = await supabase.from('users').select('points').eq('id', user.id).single();
         const newPoints = (userData?.points || 0) + pointsToAdd;
         await supabase.from('users').update({ points: newPoints }).eq('id', user.id);
       }
@@ -684,17 +864,37 @@ export default function ProfileScreen() {
   const loadReferralData = async () => {
     if (!user?.id) return;
     try {
-      const { data: userData } = await supabase.from('users').select('referral_code, referred_by').eq('id', user.id).single();
-      if (userData?.referral_code) {
-        setReferralCode(userData.referral_code);
-      } else {
-        const code = generateReferralCode(userProfile?.username || 'user');
-        await supabase.from('users').update({ referral_code: code }).eq('id', user.id);
-        setReferralCode(code);
+      const { data: userData } = await supabase.from('users').select('referral_code, username, successful_referrals').eq('id', user.id).single();
+      let code = userData?.referral_code;
+      if (!code) { code = generateReferralCode(userData?.username || 'USER'); await supabase.from('users').update({ referral_code: code }).eq('id', user.id); }
+      setReferralCode(code);
+      const { count: countFromReferrals } = await supabase.from('referrals').select('id', { count: 'exact', head: true }).eq('referrer_id', user.id);
+      const { count: countFromUsers }     = await supabase.from('users').select('id', { count: 'exact', head: true }).eq('referred_by', user.id);
+      const finalCount = Math.max(countFromReferrals || 0, countFromUsers || 0);
+      setInviteCount(finalCount);
+
+      if (userData?.successful_referrals !== finalCount) {
+        await supabase.from('users').update({ successful_referrals: finalCount }).eq('id', user.id);
+
+        // Award 100 points + 5 coins for each NEW referral not yet rewarded
+        const prevCount = userData?.successful_referrals || 0;
+        const newReferrals = finalCount - prevCount;
+        if (newReferrals > 0) {
+          const { data: meData } = await supabase.from('users').select('points').eq('id', user.id).single();
+          const currentPoints = meData?.points || 0;
+          const bonusPoints   = newReferrals * 100;
+          await supabase.from('users').update({ points: currentPoints + bonusPoints }).eq('id', user.id);
+          await supabase.from('transactions').insert({
+            user_id:     user.id,
+            type:        'referral_bonus',
+            amount:      bonusPoints,
+            description: `🎉 Referral bonus: ${newReferrals} new person${newReferrals > 1 ? 's' : ''} joined with your code!`,
+            status:      'completed',
+          });
+          setPoints(currentPoints + bonusPoints);
+        }
       }
-      const { count } = await supabase.from('referrals').select('*', { count: 'exact', head: true }).eq('referrer_id', user.id);
-      setInviteCount(count || 0);
-    } catch {}
+    } catch { setReferralCode('ERROR'); setInviteCount(0); }
   };
 
   const loadMyReferrerStatus = async () => {
@@ -897,7 +1097,7 @@ export default function ProfileScreen() {
 
   const handleSelectGlobalCountry = async (country: any) => {
     setSelectedCountry(country); setShowCountryList(false); setSelectedGlobalBank(null); setGlobalBanks([]); setLoadingGlobalBanks(true);
-    try { const bankList = await getFlutterwaveBanks(country.code); setGlobalBanks(bankList); } catch {}
+    try { const bankList = await getPaystackBanks(country.code); setGlobalBanks(bankList); } catch {}
     finally { setLoadingGlobalBanks(false); }
   };
 
@@ -924,7 +1124,7 @@ export default function ProfileScreen() {
     setBankSearch(''); setSelectedBank(null); setAccountNumber(''); setAccountName('');
     setGlobalAccountNo(''); setGlobalAccountName(''); setSelectedCountry(null); setBankRegion('nigeria');
     setPaystackConnectModalVisible(true); setBanksLoading(true);
-    try { const bankList = await getFlutterwaveBanks('NG'); setBanks(bankList); }
+    try { const bankList = await getPaystackBanks('NG'); setBanks(bankList); }
     catch (err: any) { Alert.alert('Error', 'Could not load banks. Please check your connection and try again.'); }
     finally { setBanksLoading(false); }
   };
@@ -933,7 +1133,7 @@ export default function ProfileScreen() {
     if (!accountNumber || !selectedBank) { Alert.alert('Error', 'Please select a bank and enter account number'); return; }
     setVerifyingAccount(true);
     try {
-      const result = await verifyFlutterwaveAccount(accountNumber, selectedBank.code);
+      const result = await verifyPaystackAccount(accountNumber, selectedBank.code);
       if (result.success && result.accountName) {
         setAccountName(result.accountName);
         Alert.alert('Account Verified! ✅', `Account Name: ${result.accountName}`);
@@ -990,8 +1190,8 @@ export default function ProfileScreen() {
       : '\n\n📋 We will process your payment within 1-3 business days.';
 
     const msg = myReferrerId
-      ? `Amount: ${sym}${totalLocal.toLocaleString()}\nPlatform Fee (30%): -${sym}${platformFee.toLocaleString()}\nReferral Commission (5%): -${sym}${referralCut.toLocaleString()}\nYou Receive (65%): ${sym}${userReceives.toLocaleString()}${methodNote}`
-      : `Amount: ${sym}${totalLocal.toLocaleString()}\nPlatform Fee (30%): -${sym}${platformFee.toLocaleString()}\nYou Receive (70%): ${sym}${userReceives.toLocaleString()}${methodNote}`;
+      ? `Amount: ${sym}${totalLocal.toLocaleString()}\nPlatform Fee (20%): -${sym}${platformFee.toLocaleString()}\nReferral Commission (5%): -${sym}${referralCut.toLocaleString()}\nYou Receive (75%): ${sym}${userReceives.toLocaleString()}${methodNote}`
+      : `Amount: ${sym}${totalLocal.toLocaleString()}\nPlatform Fee (20%): -${sym}${platformFee.toLocaleString()}\nYou Receive (80%): ${sym}${userReceives.toLocaleString()}${methodNote}`;
 
     Alert.alert('Confirm Withdrawal', msg, [
       { text: 'Cancel', style: 'cancel' },
@@ -1151,7 +1351,9 @@ export default function ProfileScreen() {
 
   const openBadgeDetail    = (badge: any) => { setSelectedBadge(badge); setBadgeDetailVisible(true); };
   const isPositiveTx = (type: string) =>
-    ['received', 'gift', 'gift_received', 'purchased', 'ad_revenue', 'referral_commission', 'referral_bonus'].includes(type);
+    ['received', 'gift', 'gift_received', 'gift_receive', 'received_gift',
+     'purchased', 'ad_revenue', 'referral_commission', 'referral_bonus',
+     'coins_received', 'coin_purchase'].includes(type);
   const pointsForNextLevel = level * 1000;
   const levelProgress      = (points % 1000) / 10;
 
@@ -1442,7 +1644,7 @@ export default function ProfileScreen() {
               </TouchableOpacity>
               <TouchableOpacity style={th.walletBtn} onPress={() => { setWalletVisible(false); setTimeout(() => setWithdrawModalVisible(true), 300); }}>
                 <Feather name="arrow-up-circle" size={28} color={theme.primary} />
-                <Text style={[s.walletBtnText, { color: theme.primary }]}>{t.wallet.withdraw}</Text>
+                <Text style={[s.walletBtnText, { color: theme.primary }]}>{t.wallet.withdrawFunds}</Text>
               </TouchableOpacity>
             </View>
             {!paystackConnected && (
@@ -1472,7 +1674,7 @@ export default function ProfileScreen() {
         <View style={s.modalOverlay}>
           <View style={th.modal}>
             <View style={s.modalHeader}>
-              <Text style={s.modalTitle}>💸 {t.wallet.withdraw}</Text>
+              <Text style={s.modalTitle}>💸 {t.wallet.withdrawFunds}</Text>
               <TouchableOpacity onPress={() => setWithdrawModalVisible(false)}><Feather name="x" size={24} color="#fff" /></TouchableOpacity>
             </View>
             <ScrollView style={{ padding: 20 }}>
@@ -1516,9 +1718,9 @@ export default function ProfileScreen() {
                 <View style={s.withdrawPreview}>
                   <Text style={s.withdrawPreviewLabel}>{t.wallet.breakdown}</Text>
                   <View style={s.withdrawRow}><Text style={s.withdrawRowLabel}>Gross</Text><Text style={s.withdrawRowValue}>{currency.symbol}{previewTotal.toLocaleString()}</Text></View>
-                  <View style={s.withdrawRow}><Text style={s.withdrawRowLabel}>Platform fee (30%)</Text><Text style={[s.withdrawRowValue, { color: '#ff6b6b' }]}>-{currency.symbol}{previewFee.toLocaleString()}</Text></View>
+                  <View style={s.withdrawRow}><Text style={s.withdrawRowLabel}>Platform fee (20%)</Text><Text style={[s.withdrawRowValue, { color: '#ff6b6b' }]}>-{currency.symbol}{previewFee.toLocaleString()}</Text></View>
                   {myReferrerId && <View style={s.withdrawRow}><Text style={s.withdrawRowLabel}>Referral (5%)</Text><Text style={[s.withdrawRowValue, { color: '#ff6b6b' }]}>-{currency.symbol}{previewRef.toLocaleString()}</Text></View>}
-                  <View style={s.withdrawRow}><Text style={s.withdrawRowLabel}>You receive ({myReferrerId ? '65' : '70'}%)</Text><Text style={[s.withdrawRowValue, { color: theme.primary }]}>{currency.symbol}{previewRcv.toLocaleString()}</Text></View>
+                  <View style={s.withdrawRow}><Text style={s.withdrawRowLabel}>You receive ({myReferrerId ? '75' : '80'}%)</Text><Text style={[s.withdrawRowValue, { color: theme.primary }]}>{currency.symbol}{previewRcv.toLocaleString()}</Text></View>
                   <Text style={s.withdrawPreviewNote}>Processing: {isPaystackAuto ? '⚡ Automatic' : '1-3 business days'}</Text>
                 </View>
               )}
@@ -1527,7 +1729,7 @@ export default function ProfileScreen() {
                 onPress={handleWithdraw}
                 disabled={withdrawing || !paystackConnected || withdrawNum < MIN_WITHDRAW_COINS}
               >
-                {withdrawing ? <ActivityIndicator color="#000" /> : <Text style={s.btnPrimaryText}>{t.wallet.withdraw}</Text>}
+                {withdrawing ? <ActivityIndicator color="#000" /> : <Text style={s.btnPrimaryText}>{t.wallet.withdrawFunds}</Text>}
               </TouchableOpacity>
               {!paystackConnected && (
                 <TouchableOpacity style={[s.btnPrimary, { marginTop: 10, backgroundColor: '#111', borderWidth: 1, borderColor: theme.primary }]} onPress={() => { setWithdrawModalVisible(false); setTimeout(() => handleConnectPaystack(), 300); }}>
@@ -1974,11 +2176,13 @@ export default function ProfileScreen() {
             </View>
             <ScrollView>
               <TouchableOpacity style={th.settingsItem} onPress={() => { setSettingsVisible(false); setTimeout(() => handleEditProfile(), 300); }}><Feather name="edit-2" size={20} color={theme.primary} /><Text style={s.settingsText}>{t.profile.editProfile}</Text><Feather name="chevron-right" size={18} color="#555" /></TouchableOpacity>
-              <TouchableOpacity style={th.settingsItem} onPress={() => { setSettingsVisible(false); setTimeout(() => handleConnectPaystack(), 300); }}><Feather name="credit-card" size={20} color={theme.primary} /><Text style={s.settingsText}>Bank Account</Text><Feather name="chevron-right" size={18} color="#555" /></TouchableOpacity>
+              <TouchableOpacity style={th.settingsItem} onPress={async () => { setSettingsVisible(false); await loadSavedPosts(); setTimeout(() => setSavedPostsModalVisible(true), 300); }}><Feather name="bookmark" size={20} color={theme.primary} /><Text style={s.settingsText}>{t.settings.savedPosts}</Text><Feather name="chevron-right" size={18} color="#555" /></TouchableOpacity>
+              <TouchableOpacity style={th.settingsItem} onPress={() => { setSettingsVisible(false); setTimeout(() => handleConnectPaystack(), 300); }}><Feather name="credit-card" size={20} color={theme.primary} /><Text style={s.settingsText}>{paystackConnected ? t.bank.connected : t.bank.notConnected}</Text><Feather name="chevron-right" size={18} color="#555" /></TouchableOpacity>
+              <TouchableOpacity style={th.settingsItem} onPress={() => { setSettingsVisible(false); setTimeout(() => router.push('/language-picker' as any), 300); }}><Text style={{ fontSize: 20 }}>🌐</Text><Text style={s.settingsText}>{t.common.language}</Text><Feather name="chevron-right" size={18} color="#555" /></TouchableOpacity>
               <TouchableOpacity style={th.settingsItem} onPress={() => { setSettingsVisible(false); setTimeout(() => { setEditingSocial({ ...socialLinks }); setSocialModalVisible(true); }, 300); }}><Feather name="link" size={20} color={theme.primary} /><Text style={s.settingsText}>Social Links</Text><Feather name="chevron-right" size={18} color="#555" /></TouchableOpacity>
               <View style={th.settingsItem}><Feather name="layout" size={20} color={theme.primary} /><Text style={s.settingsText}>New Profile Layout</Text><Switch value={useNewLayout} onValueChange={async (v) => { setUseNewLayout(v); try { await supabase.from('users').update({ use_new_profile_layout: v }).eq('id', user!.id); } catch {} }} trackColor={{ false: '#333', true: theme.primary }} thumbColor="#fff" /></View>
               <View style={s.settingsDivider} />
-              <TouchableOpacity style={th.settingsItem} onPress={() => { setSettingsVisible(false); setTimeout(() => setAboutModalVisible(true), 300); }}><Feather name="info" size={20} color={theme.primary} /><Text style={s.settingsText}>{t.about.title}</Text><Feather name="chevron-right" size={18} color="#555" /></TouchableOpacity>
+              <TouchableOpacity style={th.settingsItem} onPress={() => { setSettingsVisible(false); setTimeout(() => setAboutModalVisible(true), 300); }}><Feather name="info" size={20} color={theme.primary} /><Text style={s.settingsText}>{t.settings.about}</Text><Feather name="chevron-right" size={18} color="#555" /></TouchableOpacity>
               <TouchableOpacity style={th.settingsItem} onPress={() => Linking.openURL('mailto:lumvibesupport@gmail.com')}><Feather name="mail" size={20} color={theme.primary} /><Text style={s.settingsText}>Contact Support</Text><Feather name="chevron-right" size={18} color="#555" /></TouchableOpacity>
               <View style={s.settingsDivider} />
               <TouchableOpacity style={th.settingsItem} onPress={handleLogout}><Feather name="log-out" size={20} color="#ff6b6b" /><Text style={[s.settingsText, { color: '#ff6b6b' }]}>{t.common.logout}</Text></TouchableOpacity>
@@ -2254,8 +2458,8 @@ const s = StyleSheet.create({
   levelProgressText:   { color: '#555', fontSize: 10, textAlign: 'right', marginTop: 4 },
   postsSection:        { paddingHorizontal: 20, paddingTop: 8 },
   sectionTitle:        { color: '#fff', fontSize: 16, fontWeight: 'bold', paddingHorizontal: 20, marginBottom: 12 },
-  postsGrid:           { flexDirection: 'row', flexWrap: 'wrap', gap: 2 },
-  postThumb:           { width: POST_SIZE, height: POST_SIZE * 1.3, backgroundColor: '#111', position: 'relative', overflow: 'hidden' },
+  postsGrid:           { flexDirection: 'row', flexWrap: 'wrap' },
+  postThumb:           { width: POST_SIZE, height: POST_SIZE * 1.35, backgroundColor: '#111', position: 'relative', overflow: 'hidden', margin: 0.5 },
   postThumbVideoBg:    { width: '100%', height: '100%', backgroundColor: '#111', justifyContent: 'center', alignItems: 'center' },
   postThumbImg:        { width: '100%', height: '100%' },
   postThumbStats:      { position: 'absolute', bottom: 4, left: 4, flexDirection: 'row', gap: 6 },
